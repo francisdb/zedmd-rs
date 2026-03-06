@@ -17,3 +17,5 @@ target/
 .idea/
 
 Cargo.lock
+ZeDMD/
+libzedmd/

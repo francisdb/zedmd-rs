@@ -2,6 +2,9 @@
 
 A Rust library for controlling ZeDMD dot matrix displays over usb.
 
+Original C++ library:
+https://github.com/PPUC/libzedmd
+
 ## Usage
 
 Use cargo to add the dependency to your project:

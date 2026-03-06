@@ -1,0 +1,76 @@
+//! Plasma animation example.
+//!
+//! Renders a classic sine-wave colour plasma effect in an infinite loop,
+//! capped at 30 fps on the submit side. Because the plasma changes every
+//! zone on every frame the background USB thread runs at full device
+//! throughput (~9–10 fps on a 128×32 panel with a USB package size of 512 bytes).
+//!
+//! Run with:
+//! ```sh
+//! cargo run --example plasma
+//! ```
+use log::{error, info};
+use std::io;
+use std::process::ExitCode;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+use zedmd_rs::color::hsv_to_rgb565;
+use zedmd_rs::zedmd::connect;
+
+fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    match run() {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!("Error: {}", e);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn render_plasma(pixels: &mut [u16], width: usize, height: usize, t: f32) {
+    for y in 0..height {
+        for x in 0..width {
+            let xf = x as f32 / width as f32;
+            let yf = y as f32 / height as f32;
+            let v = (xf * 6.0 + t).sin()
+                + (yf * 4.0 + t * 0.7).sin()
+                + ((xf + yf) * 5.0 + t * 1.3).sin()
+                + ((xf * xf + yf * yf).sqrt() * 8.0 - t * 2.0).sin();
+            let hue = (v * 45.0).rem_euclid(360.0);
+            pixels[y * width + x] = hsv_to_rgb565(hue, 1.0, 1.0);
+        }
+    }
+}
+
+fn run() -> io::Result<()> {
+    let mut comm = connect()?;
+    comm.run()?;
+
+    let width = comm.width() as usize;
+    let height = comm.height() as usize;
+    info!("Connected: {}x{}", width, height);
+
+    let mut pixels = vec![0u16; width * height];
+    let start = Instant::now();
+    let mut frames = 0u64;
+    let frame_budget = Duration::from_secs_f64(1.0 / 30.0);
+
+    loop {
+        let frame_start = Instant::now();
+        let t = start.elapsed().as_secs_f32();
+        render_plasma(&mut pixels, width, height, t);
+        comm.render_rgb565_frame(&pixels)?;
+        frames += 1;
+
+        if frames.is_multiple_of(150) {
+            let fps = frames as f64 / start.elapsed().as_secs_f64();
+            info!("submit {:.1} fps  |  usb {:.1} fps", fps, comm.usb_fps());
+        }
+
+        if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
+            sleep(remaining);
+        }
+    }
+}
