@@ -27,6 +27,10 @@ path = "examples/plasma.rs"
 name = "rings"
 path = "examples/rings.rs"
 
+[[example]]
+name = "rainbow"
+path = "examples/rainbow.rs"
+
 [dependencies]
 env_logger = "0.11.9"
 log = "0.4.29"

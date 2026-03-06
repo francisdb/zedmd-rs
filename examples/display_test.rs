@@ -1,12 +1,11 @@
 //! Display test example.
 //!
-//! Cycles through a series of test screens: solid colours, colour bars,
-//! gradients, hue/saturation and hue/brightness selectors, a checkerboard,
-//! a scrolling scanline, and an animated rainbow. Loops forever.
+//! Cycles through a series of test screens in an infinite loop:
+//! solid colours (red, green, blue, white, black), colour bars,
+//! red→blue gradient, rainbow, hue/saturation selector,
+//! hue/brightness selector, and a checkerboard. Loops forever.
 //!
-//! Static screens are sent once and held for their duration; animated screens
-//! are submitted at up to the panel's minimum refresh rate (read from the
-//! device at handshake) with actual USB throughput logged periodically.
+//! All screens are static — sent once and held for their duration.
 //!
 //! Run with:
 //! ```sh
@@ -95,16 +94,6 @@ fn screen_hue_brightness(pixels: &mut [u16], width: usize, height: usize) {
     }
 }
 
-/// Animated rainbow: hue shifts over time.
-fn screen_rainbow_animated(pixels: &mut [u16], width: usize, height: usize, t: f32) {
-    for y in 0..height {
-        for x in 0..width {
-            let hue = (x as f32 / width as f32 * 360.0 + t * 120.0).rem_euclid(360.0);
-            pixels[y * width + x] = hsv_to_rgb565(hue, 1.0, 1.0);
-        }
-    }
-}
-
 /// Checkerboard of two colours.
 fn screen_checkerboard(
     pixels: &mut [u16],
@@ -145,15 +134,6 @@ fn screen_colour_bars(pixels: &mut [u16], width: usize, height: usize) {
     }
 }
 
-/// Scrolling horizontal scan-line.
-fn screen_scanline(pixels: &mut [u16], width: usize, height: usize, row: usize, color: u16) {
-    pixels.fill(0);
-    let y = row % height;
-    for x in 0..width {
-        pixels[y * width + x] = color;
-    }
-}
-
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 fn run() -> io::Result<()> {
@@ -163,95 +143,56 @@ fn run() -> io::Result<()> {
 
     let width = comm.width() as usize;
     let height = comm.height() as usize;
-    let min_refresh_rate = comm.panel_min_refresh_rate().max(1);
-    let frame_budget = Duration::from_secs_f64(1.0 / min_refresh_rate as f64);
-    info!(
-        "Connected: {}x{}, min refresh rate: {}Hz",
-        width, height, min_refresh_rate
-    );
+    info!("Connected: {}x{}", width, height);
 
     let mut pixels = vec![0u16; width * height];
 
-    // Each entry: (name, hold_seconds, is_animated)
-    let screens: &[(&str, f32, bool)] = &[
-        ("Red", 2.0, false),
-        ("Green", 2.0, false),
-        ("Blue", 2.0, false),
-        ("White", 2.0, false),
-        ("Black", 1.0, false),
-        ("Colour bars", 3.0, false),
-        ("Red→Blue gradient", 3.0, false),
-        ("Rainbow", 3.0, false),
-        ("Hue/Saturation", 4.0, false),
-        ("Hue/Brightness", 4.0, false),
-        ("Checkerboard", 2.0, false),
-        ("Scanline", 3.0, true),
-        ("Animated rainbow", 4.0, true),
+    // Each entry: (name, hold_seconds)
+    let screens: &[(&str, f32)] = &[
+        ("Red", 2.0),
+        ("Green", 2.0),
+        ("Blue", 2.0),
+        ("White", 2.0),
+        ("Black", 1.0),
+        ("Colour bars", 3.0),
+        ("Red→Blue gradient", 3.0),
+        ("Rainbow", 3.0),
+        ("Hue/Saturation", 4.0),
+        ("Hue/Brightness", 4.0),
+        ("Checkerboard", 2.0),
     ];
 
     loop {
-        for (name, hold_secs, animated) in screens {
+        for (name, hold_secs) in screens {
             info!("Screen: {}", name);
             let start = Instant::now();
             let hold = Duration::from_secs_f32(*hold_secs);
-            let mut frame = 0u32;
 
-            loop {
-                let frame_start = Instant::now();
-                let elapsed = frame_start.duration_since(start);
-                if elapsed >= hold {
-                    break;
+            let elapsed = start.elapsed();
+            match *name {
+                "Red" => screen_solid(&mut pixels, rgb565(255, 0, 0)),
+                "Green" => screen_solid(&mut pixels, rgb565(0, 255, 0)),
+                "Blue" => screen_solid(&mut pixels, rgb565(0, 0, 255)),
+                "White" => screen_solid(&mut pixels, rgb565(255, 255, 255)),
+                "Black" => screen_solid(&mut pixels, 0),
+                "Colour bars" => screen_colour_bars(&mut pixels, width, height),
+                "Red→Blue gradient" => screen_gradient_h(
+                    &mut pixels,
+                    width,
+                    height,
+                    rgb565(255, 0, 0),
+                    rgb565(0, 0, 255),
+                ),
+                "Rainbow" => screen_rainbow(&mut pixels, width, height),
+                "Hue/Saturation" => screen_hue_saturation(&mut pixels, width, height),
+                "Hue/Brightness" => screen_hue_brightness(&mut pixels, width, height),
+                "Checkerboard" => {
+                    screen_checkerboard(&mut pixels, width, height, rgb565(255, 255, 255), 0, 4)
                 }
-                let t = elapsed.as_secs_f32();
-
-                match *name {
-                    "Red" => screen_solid(&mut pixels, rgb565(255, 0, 0)),
-                    "Green" => screen_solid(&mut pixels, rgb565(0, 255, 0)),
-                    "Blue" => screen_solid(&mut pixels, rgb565(0, 0, 255)),
-                    "White" => screen_solid(&mut pixels, rgb565(255, 255, 255)),
-                    "Black" => screen_solid(&mut pixels, 0),
-                    "Colour bars" => screen_colour_bars(&mut pixels, width, height),
-                    "Red→Blue gradient" => screen_gradient_h(
-                        &mut pixels,
-                        width,
-                        height,
-                        rgb565(255, 0, 0),
-                        rgb565(0, 0, 255),
-                    ),
-                    "Rainbow" => screen_rainbow(&mut pixels, width, height),
-                    "Hue/Saturation" => screen_hue_saturation(&mut pixels, width, height),
-                    "Hue/Brightness" => screen_hue_brightness(&mut pixels, width, height),
-                    "Checkerboard" => {
-                        screen_checkerboard(&mut pixels, width, height, rgb565(255, 255, 255), 0, 4)
-                    }
-                    "Scanline" => screen_scanline(
-                        &mut pixels,
-                        width,
-                        height,
-                        frame as usize,
-                        rgb565(0, 255, 0),
-                    ),
-                    "Animated rainbow" => screen_rainbow_animated(&mut pixels, width, height, t),
-                    _ => screen_solid(&mut pixels, 0),
-                }
-
-                comm.render_rgb565_frame(&pixels);
-                frame += 1;
-
-                // Static screens only need one render; sleep the remainder.
-                // Animated screens sleep one frame budget to cap the submit rate.
-                if !animated {
-                    sleep(hold - elapsed);
-                    break;
-                } else if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
-                    sleep(remaining);
-                }
+                _ => screen_solid(&mut pixels, 0),
             }
-
-            if *animated {
-                let fps = frame as f64 / *hold_secs as f64;
-                info!("  {} frames in {:.1}s = {:.1} fps", frame, hold_secs, fps);
-            }
+            comm.render_rgb565_frame(&pixels);
+            sleep(hold - elapsed);
         }
     }
 }

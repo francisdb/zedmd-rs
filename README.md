@@ -21,9 +21,10 @@ cargo add zedmd
 | Example                                    | Description                                                                                            |
 |--------------------------------------------|--------------------------------------------------------------------------------------------------------|
 | [`pixel_scan`](examples/pixel_scan.rs)     | Scans a single white pixel across every position — useful for verifying the connection and panel       |
-| [`display_test`](examples/display_test.rs) | Cycles through solid colours, gradients, colour bars, checkerboard and animated screens                |
+| [`display_test`](examples/display_test.rs) | Cycles through solid colours, gradients, colour bars, checkerboard and static rainbow                  |
 | [`plasma`](examples/plasma.rs)             | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                   |
 | [`rings`](examples/rings.rs)               | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)     |
+| [`rainbow`](examples/rainbow.rs)           | Scrolling scanline and animated rainbow                                                                |
 | [`settings`](examples/settings.rs)         | Read and optionally update device settings (brightness, RGB order, USB package size, panel parameters) |
 
 Run any example with:
