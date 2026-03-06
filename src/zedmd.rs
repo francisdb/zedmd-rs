@@ -44,7 +44,7 @@ pub fn connect() -> io::Result<ZeDMDComm> {
                 if let Err(e) = c.render_rgb565_frame(&frame.pixels) {
                     error!("Stream thread render error: {}", e);
                 } else {
-                    queue_thread.mark_sent();
+                    queue_thread.mark_sent(frame.id);
                 }
             }
             info!("ZeDMD stream thread exiting");
@@ -141,12 +141,27 @@ impl ZeDMDComm {
         Ok(())
     }
 
-    /// Queue a frame for async rendering. Returns immediately; the background
-    /// thread forwards it to the device. If a frame is already pending it is
-    /// replaced (latest-frame-wins, matching libzedmd behaviour).
-    pub fn render_rgb565_frame(&self, pixels: &[u16]) -> io::Result<()> {
-        self.queue.push(pixels.to_vec());
-        Ok(())
+    /// Queue a frame for async rendering. Returns a frame ID that can be
+    /// passed to [`wait_for_frame`] to block until the device has received it.
+    /// If a frame is already pending it is replaced (latest-frame-wins).
+    pub fn render_rgb565_frame(&self, pixels: &[u16]) -> u64 {
+        self.queue.push(pixels.to_vec())
+    }
+
+    /// Non-blocking check: returns `true` if the frame with the given ID has
+    /// already been sent to the device. Use this in animation loops to skip
+    /// rendering a new frame when the device hasn't finished the previous one,
+    /// without blocking the caller.
+    pub fn is_frame_sent(&self, id: u64) -> bool {
+        self.queue.is_frame_sent(id)
+    }
+
+    /// Block until the frame with the given ID has been sent to the device.
+    /// Use the ID returned by [`render_rgb565_frame`]. Prefer this for
+    /// sequential use cases (e.g. pixel scan) where you must not advance
+    /// until the device has received a specific frame.
+    pub fn wait_for_frame(&self, id: u64) {
+        self.queue.wait_for_frame(id);
     }
 
     /// Returns the actual USB send rate (frames/sec) since the last call to

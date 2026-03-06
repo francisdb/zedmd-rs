@@ -5,7 +5,8 @@
 //! a scrolling scanline, and an animated rainbow. Loops forever.
 //!
 //! Static screens are sent once and held for their duration; animated screens
-//! are submitted at up to 30 fps with actual USB throughput logged periodically.
+//! are submitted at up to the panel's minimum refresh rate (read from the
+//! device at handshake) with actual USB throughput logged periodically.
 //!
 //! Run with:
 //! ```sh
@@ -162,7 +163,12 @@ fn run() -> io::Result<()> {
 
     let width = comm.width() as usize;
     let height = comm.height() as usize;
-    info!("Connected: {}x{}", width, height);
+    let min_refresh_rate = comm.panel_min_refresh_rate().max(1);
+    let frame_budget = Duration::from_secs_f64(1.0 / min_refresh_rate as f64);
+    info!(
+        "Connected: {}x{}, min refresh rate: {}Hz",
+        width, height, min_refresh_rate
+    );
 
     let mut pixels = vec![0u16; width * height];
 
@@ -191,7 +197,8 @@ fn run() -> io::Result<()> {
             let mut frame = 0u32;
 
             loop {
-                let elapsed = start.elapsed();
+                let frame_start = Instant::now();
+                let elapsed = frame_start.duration_since(start);
                 if elapsed >= hold {
                     break;
                 }
@@ -228,13 +235,16 @@ fn run() -> io::Result<()> {
                     _ => screen_solid(&mut pixels, 0),
                 }
 
-                comm.render_rgb565_frame(&pixels)?;
+                comm.render_rgb565_frame(&pixels);
                 frame += 1;
 
-                // Static screens only need one render; sleep the remainder
+                // Static screens only need one render; sleep the remainder.
+                // Animated screens sleep one frame budget to cap the submit rate.
                 if !animated {
                     sleep(hold - elapsed);
                     break;
+                } else if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
+                    sleep(remaining);
                 }
             }
 

@@ -1,9 +1,12 @@
 # zedmd-rs
 
-A Rust library for controlling ZeDMD dot matrix displays over usb.
+A Rust library for controlling ZeDMD dot matrix displays over USB.
 
 Original C++ library:
 https://github.com/PPUC/libzedmd
+
+For a detailed description of the USB serial protocol, handshake, command
+opcodes, zone streaming and ACK flow see [serial_protocol.md](serial_protocol.md).
 
 ## Usage
 
@@ -13,12 +16,28 @@ Use cargo to add the dependency to your project:
 cargo add zedmd
 ```
 
+## Examples
+
+| Example                                    | Description                                                                                            |
+|--------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| [`pixel_scan`](examples/pixel_scan.rs)     | Scans a single white pixel across every position — useful for verifying the connection and panel       |
+| [`display_test`](examples/display_test.rs) | Cycles through solid colours, gradients, colour bars, checkerboard and animated screens                |
+| [`plasma`](examples/plasma.rs)             | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                   |
+| [`rings`](examples/rings.rs)               | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)     |
+| [`settings`](examples/settings.rs)         | Read and optionally update device settings (brightness, RGB order, USB package size, panel parameters) |
+
+Run any example with:
+
+```bash
+cargo run --example plasma
+```
 
 ## Allowing access to the USB device on Linux
 
 ### Option 1: creating a udev rule
 
-You can create an udev rule to allow access to the device. Create a file in `/etc/udev/rules.d/99-zedmd.rules` with the following content:
+You can create an udev rule to allow access to the device. Create a file in `/etc/udev/rules.d/99-zedmd.rules` with the
+following content:
 
 ```bash
 sudo nano /etc/udev/rules.d/99-zedmd.rules
@@ -53,7 +72,8 @@ sudo udevadm trigger
 
 ### Option 2: Add your user to the `dialout` group
 
-Alternatively you can give your user access to any serial port. You can do this by adding your user to the `dialout` group:
+Alternatively you can give your user access to any serial port. You can do this by adding your user to the `dialout`
+group:
 
 ```bash
 sudo usermod -aG dialout $USER

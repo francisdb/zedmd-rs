@@ -61,19 +61,23 @@ fn run() -> io::Result<()> {
 
     let width = comm.width() as usize;
     let height = comm.height() as usize;
-    info!("Connected: {}x{}", width, height);
+    let refresh_rate = comm.panel_min_refresh_rate().max(1);
+    info!(
+        "Connected: {}x{}, refresh rate cap: {} fps",
+        width, height, refresh_rate
+    );
 
     let mut pixels = vec![0u16; width * height];
     let start = Instant::now();
     let mut frames = 0u64;
     let time_scale = 0.1f32;
-    let frame_budget = Duration::from_secs_f64(1.0 / 30.0);
+    let frame_budget = Duration::from_secs_f64(1.0 / refresh_rate as f64);
 
     loop {
         let frame_start = Instant::now();
         let t = start.elapsed().as_secs_f32() * time_scale;
         render_rings(&mut pixels, width, height, t);
-        comm.render_rgb565_frame(&pixels)?;
+        comm.render_rgb565_frame(&pixels);
         frames += 1;
 
         if frames.is_multiple_of(150) {

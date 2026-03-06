@@ -5,6 +5,13 @@
 //! USB connection and zone-streaming protocol are working correctly and
 //! that every pixel on the panel is functional.
 //!
+//! Each pixel is submitted via the async frame queue and then
+//! [`wait_for_frame`] is called to block until the device has actually
+//! received and displayed it before moving to the next position. Without
+//! this wait the queue would run at thousands of frames per second,
+//! dropping almost every frame and making the scan appear to jump to a
+//! far-away pixel.
+//!
 //! Run with:
 //! ```sh
 //! cargo run --example pixel_scan
@@ -38,6 +45,7 @@ fn main() -> ExitCode {
 
 fn test_connect() -> io::Result<()> {
     let mut comm = connect()?;
+    comm.run()?;
     comm.disable_debug()?;
     info!("Connected to ZeDMD device");
 
@@ -52,36 +60,40 @@ fn test_connect() -> io::Result<()> {
         ));
     }
 
-    // Start keep-alive (handled inline during render calls)
-    comm.run()?;
-
     let total_pixels = width * height;
+    // panel_min_refresh_rate is the minimum PWM scan rate of the LED matrix
+    // hardware. Sleeping for 1/min_rate gives the panel at least one full
+    // refresh cycle to display the pixel before we move on.
+    let min_refresh_rate = comm.panel_min_refresh_rate().max(1);
+    let min_panel_frame = Duration::from_secs_f64(1.0 / min_refresh_rate as f64);
     info!(
-        "Scanning white pixel from (0,0) to ({},{}) - {} pixels total",
+        "Scanning white pixel from (0,0) to ({},{}) - {} pixels total, min panel refresh {}Hz",
         width - 1,
         height - 1,
-        total_pixels
+        total_pixels,
+        min_refresh_rate
     );
 
     let mut pixels = vec![0u16; total_pixels];
     let scan_start = Instant::now();
+    let mut last_frame_id = 0u64;
 
     for i in 0..total_pixels {
-        // Clear previous pixel, set current pixel to white (RGB565 0xFFFF)
         if i > 0 {
             pixels[i - 1] = 0;
         }
         pixels[i] = rgb565(255, 255, 255);
 
-        let frame_start = Instant::now();
-        comm.render_rgb565_frame(&pixels)?;
-        let frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        last_frame_id = comm.render_rgb565_frame(&pixels);
+        // Wait for USB send, then sleep one panel refresh cycle so the
+        // hardware has time to display the pixel before we move on.
+        comm.wait_for_frame(last_frame_id);
+        sleep(min_panel_frame);
 
         let x = i % width;
         let y = i / width;
-        // Log once per row to avoid flooding the output
         if x == 0 {
-            info!("Row {:2} - frame took {:.2}ms", y, frame_ms);
+            info!("Row {:2}", y);
         }
     }
 
@@ -94,9 +106,10 @@ fn test_connect() -> io::Result<()> {
         fps,
         total_ms / total_pixels as f64
     );
+    // wait_for_frame already guarantees the last pixel is visible before we
+    // clear, but be explicit here for clarity.
+    comm.wait_for_frame(last_frame_id);
     comm.clear_screen()?;
-
-    sleep(Duration::from_millis(500));
     comm.stop()?;
 
     Ok(())

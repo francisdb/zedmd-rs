@@ -1,9 +1,13 @@
 //! Plasma animation example.
 //!
 //! Renders a classic sine-wave colour plasma effect in an infinite loop,
-//! capped at 30 fps on the submit side. Because the plasma changes every
-//! zone on every frame the background USB thread runs at full device
-//! throughput (~9–10 fps on a 128×32 panel with a USB package size of 512 bytes).
+//! capped at the panel's reported minimum refresh rate (read from the device
+//! at handshake). Because the plasma changes every zone on every frame the
+//! background USB thread runs at full device throughput (~9–10 fps on a
+//! 128×32 panel with a USB package size of 512 bytes).
+//!
+//! If the submit rate exceeds USB throughput, pending frames are dropped
+//! (latest-frame-wins) — visible as skipped animation steps.
 //!
 //! Run with:
 //! ```sh
@@ -50,18 +54,24 @@ fn run() -> io::Result<()> {
 
     let width = comm.width() as usize;
     let height = comm.height() as usize;
-    info!("Connected: {}x{}", width, height);
+    // Cap submit rate to the panel's minimum refresh rate so we don't submit
+    // faster than the device expects to be driven.
+    let refresh_rate = comm.panel_min_refresh_rate().max(1);
+    info!(
+        "Connected: {}x{}, refresh rate cap: {} fps",
+        width, height, refresh_rate
+    );
 
     let mut pixels = vec![0u16; width * height];
     let start = Instant::now();
     let mut frames = 0u64;
-    let frame_budget = Duration::from_secs_f64(1.0 / 30.0);
+    let frame_budget = Duration::from_secs_f64(1.0 / refresh_rate as f64);
 
     loop {
         let frame_start = Instant::now();
         let t = start.elapsed().as_secs_f32();
         render_plasma(&mut pixels, width, height, t);
-        comm.render_rgb565_frame(&pixels)?;
+        comm.render_rgb565_frame(&pixels);
         frames += 1;
 
         if frames.is_multiple_of(150) {
