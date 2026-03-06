@@ -41,10 +41,10 @@ impl FrameQueue {
         let mut state = lock.lock().unwrap();
         // If a frame is waiting unsent, it will be dropped — advance sent_id
         // to its ID so any wait_for_frame caller on that ID is unblocked.
-        if let Some(dropped) = state.queue.pop_front() {
-            if dropped.id > state.sent_id {
-                state.sent_id = dropped.id;
-            }
+        if let Some(dropped) = state.queue.pop_front()
+            && dropped.id > state.sent_id
+        {
+            state.sent_id = dropped.id;
         }
         let id = state.next_id;
         state.next_id += 1;
