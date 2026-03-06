@@ -2,9 +2,15 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Pixel data for a queued frame — either RGB565 (2 bytes/pixel) or RGB888 (3 bytes/pixel).
+pub(crate) enum FramePixels {
+    Rgb565(Vec<u16>),
+    Rgb888(Vec<u8>),
+}
+
 pub(crate) struct Frame {
     pub id: u64,
-    pub pixels: Vec<u16>,
+    pub pixels: FramePixels,
 }
 
 struct State {
@@ -38,7 +44,7 @@ impl FrameQueue {
 
     /// Push a frame (latest-frame-wins). Returns the frame ID that can be
     /// passed to [`wait_for_frame`] to block until it has been sent.
-    pub fn push(&self, pixels: Vec<u16>) -> u64 {
+    pub fn push(&self, pixels: FramePixels) -> u64 {
         let (lock, cvar) = &*self.inner;
         let mut state = lock.lock().unwrap();
         // If a frame is waiting unsent, it will be dropped — advance sent_id
@@ -53,6 +59,14 @@ impl FrameQueue {
         state.queue.push_back(Frame { id, pixels });
         cvar.notify_all();
         id
+    }
+
+    pub fn push_rgb565(&self, pixels: Vec<u16>) -> u64 {
+        self.push(FramePixels::Rgb565(pixels))
+    }
+
+    pub fn push_rgb888(&self, pixels: Vec<u8>) -> u64 {
+        self.push(FramePixels::Rgb888(pixels))
     }
 
     /// Block until a frame is available, then return it.

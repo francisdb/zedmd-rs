@@ -18,14 +18,16 @@ cargo add zedmd
 
 ## Examples
 
-| Example                                    | Description                                                                                            |
-|--------------------------------------------|--------------------------------------------------------------------------------------------------------|
-| [`pixel_scan`](examples/pixel_scan.rs)     | Scans a single white pixel across every position — useful for verifying the connection and panel       |
-| [`display_test`](examples/display_test.rs) | Cycles through solid colours, gradients, colour bars, checkerboard and static rainbow                  |
-| [`plasma`](examples/plasma.rs)             | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                   |
-| [`rings`](examples/rings.rs)               | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)     |
-| [`rainbow`](examples/rainbow.rs)           | Scrolling scanline and animated rainbow                                                                |
-| [`settings`](examples/settings.rs)         | Read and optionally update device settings (brightness, RGB order, USB package size, panel parameters) |
+| Example                                      | Description                                                                                            |
+|----------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| [`pixel_scan`](examples/pixel_scan.rs)       | Scans a single white pixel across every position — useful for verifying the connection and panel       |
+| [`display_test`](examples/display_test.rs)   | Cycles through solid colours, gradients, colour bars, checkerboard and static rainbow                  |
+| [`plasma`](examples/plasma.rs)               | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                   |
+| [`plasma_rgb888`](examples/plasma_rgb888.rs) | Same plasma using true RGB888 (command 0x04) — use this to verify the RGB888 path works on your device |
+| [`rings`](examples/rings.rs)                 | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)     |
+| [`rainbow`](examples/rainbow.rs)             | Animated rainbow                                                                                       |
+| [`scaling`](examples/scaling.rs)             | RGB888 plasma at native, 2× downscaled, and 2× upscaled source resolutions — evaluates scaling quality |
+| [`settings`](examples/settings.rs)           | Read and optionally update device settings (brightness, RGB order, USB package size, panel parameters) |
 
 Run any example with:
 

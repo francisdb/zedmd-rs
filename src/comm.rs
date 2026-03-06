@@ -16,11 +16,14 @@ pub(crate) const ZEDMD_COMM_MIN_SERIAL_WRITE_AT_ONCE: usize = 32;
 pub(crate) const ZEDMD_COMM_MAX_SERIAL_WRITE_AT_ONCE: usize = 1920;
 pub(crate) const ZEDMD_COMM_DEFAULT_SERIAL_WRITE_AT_ONCE: usize = 64;
 pub(crate) const ZEDMD_COMM_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms
-// ACK read timeout in ms. The C++ uses 16ms per sp_blocking_read call, but
-// sp_blocking_read retries internally until the full buffer is filled or the
-// timeout expires. Our read_exact on Linux gives up after one timeout interval,
-// so we use a larger value to give the device enough time to respond.
 pub(crate) const ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS: u64 = 200;
+
+/// ZEDMD_ZONES_BYTE_LIMIT_RGB565 = 128*4*2+16 = 1040
+pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB565: usize = 128 * 4 * 2 + 16;
+/// ZEDMD_ZONES_BYTE_LIMIT_RGB888: the theoretical value (128*4*3+16 = 1552) exceeds the
+/// firmware's BUFFER_SIZE of 1152, causing the device to display "payloadSize > BUFFER_SIZE".
+/// We cap at 1152 to match the firmware buffer so sub-frames stay within bounds.
+pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB888: usize = 1152;
 
 // "FRAME" in ascii
 pub(crate) const FRAME_HEADER: [u8; 5] = [0x46, 0x52, 0x41, 0x4d, 0x45];
@@ -96,16 +99,10 @@ impl SharedZeDMDComm {
 
     /// Render a full RGB565 frame using the zone-streaming protocol.
     /// Only zones whose content has changed since the last call are transmitted.
-    /// Zone data is split into sub-frames when it exceeds the device buffer limit,
-    /// matching the C++ behaviour (ZEDMD_ZONES_BYTE_LIMIT_RGB565 = 128*4*2+16 = 1040).
     pub fn render_rgb565_frame(&mut self, pixels: &[u16]) -> io::Result<()> {
-        // Send keep-alive inline if the device has been idle long enough.
         self.keep_alive_tick()?;
-
         let width = self.width as usize;
         let height = self.height as usize;
-        let zone_width = self.zone_width as usize;
-        let zone_height = self.zone_height as usize;
         if width == 0 || height == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -124,8 +121,66 @@ impl SharedZeDMDComm {
                 ),
             ));
         }
+        // Convert u16 pixels to little-endian bytes
+        let bytes: Vec<u8> = pixels
+            .iter()
+            .flat_map(|&p| [(p & 0xFF) as u8, (p >> 8) as u8])
+            .collect();
+        self.render_zones(
+            &bytes,
+            2,
+            ZedmdCommCommand::RGB565ZonesStream,
+            ZEDMD_ZONES_BYTE_LIMIT_RGB565,
+        )
+    }
 
-        let zone_bytes = zone_width * zone_height * 2; // bytes per zone (RGB565)
+    /// Render a full RGB888 frame using the zone-streaming protocol.
+    /// Only zones whose content has changed since the last call are transmitted.
+    /// Pixels are packed `[r, g, b, r, g, b, …]`.
+    pub fn render_rgb888_frame(&mut self, pixels: &[u8]) -> io::Result<()> {
+        self.keep_alive_tick()?;
+        let width = self.width as usize;
+        let height = self.height as usize;
+        if width == 0 || height == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Device dimensions not set",
+            ));
+        }
+        if pixels.len() != width * height * 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Expected {} bytes ({}x{}x3), got {}",
+                    width * height * 3,
+                    width,
+                    height,
+                    pixels.len()
+                ),
+            ));
+        }
+        self.render_zones(
+            pixels,
+            3,
+            ZedmdCommCommand::RGB888ZonesStream,
+            ZEDMD_ZONES_BYTE_LIMIT_RGB888,
+        )
+    }
+
+    /// Generic zone-streaming implementation shared by RGB565 and RGB888.
+    /// `bytes_per_pixel` is 2 (RGB565) or 3 (RGB888).
+    fn render_zones(
+        &mut self,
+        pixels: &[u8],
+        bytes_per_pixel: usize,
+        command: ZedmdCommCommand,
+        zones_byte_limit: usize,
+    ) -> io::Result<()> {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let zone_width = self.zone_width as usize;
+        let zone_height = self.zone_height as usize;
+        let zone_bytes = zone_width * zone_height * bytes_per_pixel;
         let zones_x = width / zone_width;
         let zones_y = height / zone_height;
 
@@ -145,11 +200,16 @@ impl SharedZeDMDComm {
                 let mut all_black = true;
                 for row in 0..zone_height {
                     for col in 0..zone_width {
-                        let px = pixels[(zy * zone_height + row) * width + (zx * zone_width + col)];
-                        let off = (row * zone_width + col) * 2;
-                        zone_buf[off] = (px & 0xFF) as u8;
-                        zone_buf[off + 1] = (px >> 8) as u8;
-                        if px != 0 {
+                        let px_offset = ((zy * zone_height + row) * width
+                            + (zx * zone_width + col))
+                            * bytes_per_pixel;
+                        let zone_offset = (row * zone_width + col) * bytes_per_pixel;
+                        zone_buf[zone_offset..zone_offset + bytes_per_pixel]
+                            .copy_from_slice(&pixels[px_offset..px_offset + bytes_per_pixel]);
+                        if pixels[px_offset..px_offset + bytes_per_pixel]
+                            .iter()
+                            .any(|&b| b != 0)
+                        {
                             all_black = false;
                         }
                     }
@@ -175,13 +235,9 @@ impl SharedZeDMDComm {
             return Ok(());
         }
 
-        // Match libzedmd: split raw zone data at ZEDMD_ZONES_BYTE_LIMIT_RGB565 = zone_w*zone_h*2*16+16
-        // then compress each chunk independently and send in reverse order (last sub-frame first).
-        let zones_byte_limit = zone_width * zone_height * 2 * 16 + 16; // 1040 for 8x4 zones
         let zone_bytes_total = zone_bytes + 1;
         let buffer_size_threshold = zones_byte_limit - zone_bytes_total;
 
-        // Split into sub-frames
         let mut sub_frames: Vec<Vec<u8>> = Vec::new();
         let mut pos = 0;
         let mut buf: Vec<u8> = Vec::with_capacity(zones_byte_limit);
@@ -203,9 +259,15 @@ impl SharedZeDMDComm {
             sub_frames.push(buf);
         }
 
-        // Send in reverse order (matching libzedmd's rbegin iteration)
         let n_sub_frames = sub_frames.len();
-        for chunk in sub_frames.into_iter() {
+
+        // Each sub-frame is an independent firmware transaction: FRAME header,
+        // zone data command, then RenderFrame. RenderFrame returns result=1
+        // which causes the firmware to break out and wait for a new FRAME header,
+        // so each sub-frame must be its own send_chunks call.
+        // Sub-frames are sent in reverse order matching C++ StreamBytes (rbegin/rend).
+        for (sf_idx, chunk) in sub_frames.into_iter().rev().enumerate() {
+            let raw_size = chunk.len();
             let compressed = compress_to_vec_zlib(&chunk, 6);
             let (data, compressed_flag) = if compressed.len() < chunk.len() {
                 (compressed.as_slice(), 1u8)
@@ -213,12 +275,21 @@ impl SharedZeDMDComm {
                 (chunk.as_slice(), 0u8)
             };
             let data_size = data.len();
+            debug!(
+                "Sub-frame {}/{}: raw={} compressed={} flag={} command={:?}",
+                sf_idx + 1,
+                n_sub_frames,
+                raw_size,
+                data_size,
+                compressed_flag,
+                command
+            );
             let mut payload: Vec<u8> = Vec::with_capacity(
                 FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() * 2 + 8 + data_size,
             );
             payload.extend_from_slice(&FRAME_HEADER);
             payload.extend_from_slice(&CTRL_CHARS_HEADER);
-            payload.push(ZedmdCommCommand::RGB565ZonesStream as u8);
+            payload.push(command as u8);
             payload.push((data_size >> 8) as u8);
             payload.push((data_size & 0xFF) as u8);
             payload.push(compressed_flag);
@@ -232,7 +303,8 @@ impl SharedZeDMDComm {
         }
 
         debug!(
-            "Sent RGB565 delta frame: {} changed zones, {} raw bytes, {} sub-frame(s)",
+            "Sent {:?} delta frame: {} changed zones, {} raw bytes, {} sub-frame(s)",
+            command,
             changed_zones,
             all_zone_data.len(),
             n_sub_frames
@@ -262,8 +334,34 @@ impl SharedZeDMDComm {
 }
 
 /// Scan all USB serial ports and return a connected `SharedZeDMDComm` for the first ZeDMD found.
+/// Retries for up to 10 seconds to handle USB re-enumeration after sleep/wake.
 pub(crate) fn connect_internal() -> io::Result<SharedZeDMDComm> {
-    let ports = serialport::available_ports().expect("No ports found!");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_err = io::Error::new(io::ErrorKind::NotFound, "No ZeDMD device found");
+
+    loop {
+        match try_connect_once() {
+            Some(comm) => return Ok(comm),
+            None => {
+                if Instant::now() >= deadline {
+                    return Err(last_err);
+                }
+                info!("No ZeDMD found yet, retrying in 1s...");
+                sleep(Duration::from_secs(1));
+                last_err = io::Error::new(io::ErrorKind::NotFound, "No ZeDMD device found");
+            }
+        }
+    }
+}
+
+fn try_connect_once() -> Option<SharedZeDMDComm> {
+    let ports = match serialport::available_ports() {
+        Ok(p) => p,
+        Err(e) => {
+            debug!("Failed to enumerate ports: {}", e);
+            return None;
+        }
+    };
     for p in ports {
         if let UsbPort(info) = p.port_type {
             let port_name = p.port_name.clone();
@@ -271,24 +369,27 @@ pub(crate) fn connect_internal() -> io::Result<SharedZeDMDComm> {
                 "ZeDMD candidate: device={}, vid={:04x}, pid={:04x}",
                 port_name, info.vid, info.pid
             );
-            let port: Box<dyn SerialPort> = serialport::new(p.port_name, ZEDMD_COMM_BAUD_RATE)
+            let port = match serialport::new(&p.port_name, ZEDMD_COMM_BAUD_RATE)
                 .parity(Parity::None)
                 .data_bits(DataBits::Eight)
                 .stop_bits(StopBits::One)
                 .flow_control(serialport::FlowControl::None)
                 .timeout(Duration::from_millis(ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS))
                 .open()
-                .expect("Failed to open port");
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    debug!("Failed to open {}: {}", port_name, e);
+                    continue;
+                }
+            };
 
             if let Some(internal) = try_handshake(port_name, port) {
-                return Ok(internal);
+                return Some(internal);
             }
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "No ZeDMD device found",
-    ))
+    None
 }
 
 /// Try the handshake on an already-opened port. Returns `Some(SharedZeDMDComm)` on success.

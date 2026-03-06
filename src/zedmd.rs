@@ -2,7 +2,8 @@ use crate::comm::{
     SharedZeDMDComm, ZEDMD_COMM_BAUD_RATE, ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS, connect_internal,
     try_handshake,
 };
-use crate::queue::FrameQueue;
+use crate::queue::{FramePixels, FrameQueue};
+use crate::scale::{scale_rgb565, scale_rgb888};
 use crate::types::{RgbOrder, ZedmdCommCommand};
 use log::{error, info};
 use serialport::{DataBits, Parity, StopBits};
@@ -15,10 +16,10 @@ use std::time::{Duration, Instant};
 
 /// Handle to the ZeDMD device.
 ///
-/// Frames submitted via [`render_rgb565_frame`] are queued and forwarded to the
-/// device by a dedicated background thread (matching libzedmd's async model).
-/// The caller returns immediately after queuing; stale frames are dropped if
-/// the device can't keep up.
+/// Frames submitted via [`render_rgb565_frame`] or [`render_rgb888_frame`] are
+/// queued and forwarded to the device by a dedicated background thread (matching
+/// libzedmd's async model). The caller returns immediately after queuing; stale
+/// frames are dropped if the device can't keep up.
 pub struct ZeDMDComm {
     pub(crate) comm: Arc<Mutex<SharedZeDMDComm>>,
     queue: FrameQueue,
@@ -26,10 +27,20 @@ pub struct ZeDMDComm {
     /// For usb_fps() measurement
     last_fps_instant: Instant,
     last_fps_sent: u64,
+    /// Source (ROM) resolution set via set_frame_size(). Defaults to panel size.
+    rom_width: u32,
+    rom_height: u32,
+    /// When true, small sources are pixel-doubled instead of centred.
+    upscaling: bool,
+    /// When true, RGB888 frames are sent as RGB888ZonesStream (cmd 0x04).
+    /// When false (default), they are converted to RGB565 before sending.
+    true_rgb888: bool,
 }
 
 pub fn connect() -> io::Result<ZeDMDComm> {
     let internal = connect_internal()?;
+    let panel_width = internal.width;
+    let panel_height = internal.height;
     let comm = Arc::new(Mutex::new(internal));
     let queue = FrameQueue::new();
 
@@ -41,7 +52,11 @@ pub fn connect() -> io::Result<ZeDMDComm> {
         .spawn(move || {
             while let Some(frame) = queue_thread.pop() {
                 let mut c = comm_thread.lock().unwrap();
-                if let Err(e) = c.render_rgb565_frame(&frame.pixels) {
+                let result = match &frame.pixels {
+                    FramePixels::Rgb565(pixels) => c.render_rgb565_frame(pixels),
+                    FramePixels::Rgb888(pixels) => c.render_rgb888_frame(pixels),
+                };
+                if let Err(e) = result {
                     error!("Stream thread render error: {}", e);
                 } else {
                     queue_thread.mark_sent(frame.id);
@@ -57,6 +72,10 @@ pub fn connect() -> io::Result<ZeDMDComm> {
         thread: Some(handle),
         last_fps_instant: Instant::now(),
         last_fps_sent: 0,
+        rom_width: panel_width,
+        rom_height: panel_height,
+        upscaling: false,
+        true_rgb888: false,
     })
 }
 
@@ -141,11 +160,113 @@ impl ZeDMDComm {
         Ok(())
     }
 
-    /// Queue a frame for async rendering. Returns a frame ID that can be
-    /// passed to [`wait_for_frame`] to block until the device has received it.
-    /// If a frame is already pending it is replaced (latest-frame-wins).
+    /// Queue an RGB565 frame for async rendering. Returns a frame ID that can
+    /// be passed to [`wait_for_frame`] to block until the device has received it.
+    /// If the source resolution was set via [`set_frame_size`], the frame is
+    /// scaled to the panel size before queuing. If a frame is already pending
+    /// it is replaced (latest-frame-wins).
     pub fn render_rgb565_frame(&self, pixels: &[u16]) -> u64 {
-        self.queue.push(pixels.to_vec())
+        let comm = self.comm.lock().unwrap();
+        let panel_w = comm.width;
+        let panel_h = comm.height;
+        drop(comm);
+
+        let scaled = if self.rom_width != panel_w || self.rom_height != panel_h {
+            scale_rgb565(
+                pixels,
+                self.rom_width,
+                self.rom_height,
+                panel_w,
+                panel_h,
+                self.upscaling,
+            )
+        } else {
+            pixels.to_vec()
+        };
+        self.queue.push_rgb565(scaled)
+    }
+
+    /// Queue an RGB888 frame for async rendering. Pixels are packed
+    /// `[r, g, b, r, g, b, …]`. If [`enable_true_rgb888`] has been called the
+    /// frame is sent as RGB888ZonesStream (command 0x04); otherwise it is
+    /// converted to RGB565 first (matching libzedmd's default behaviour).
+    /// Scaling via [`set_frame_size`] is applied before conversion.
+    pub fn render_rgb888_frame(&self, pixels: &[u8]) -> u64 {
+        let comm = self.comm.lock().unwrap();
+        let panel_w = comm.width;
+        let panel_h = comm.height;
+        drop(comm);
+
+        let scaled = if self.rom_width != panel_w || self.rom_height != panel_h {
+            scale_rgb888(
+                pixels,
+                self.rom_width,
+                self.rom_height,
+                panel_w,
+                panel_h,
+                self.upscaling,
+            )
+        } else {
+            pixels.to_vec()
+        };
+
+        if self.true_rgb888 {
+            self.queue.push_rgb888(scaled)
+        } else {
+            // Convert RGB888 → RGB565 (matching libzedmd default)
+            let rgb565: Vec<u16> = scaled
+                .chunks_exact(3)
+                .map(|c| {
+                    let r = c[0] as u16;
+                    let g = c[1] as u16;
+                    let b = c[2] as u16;
+                    ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                })
+                .collect();
+            self.queue.push_rgb565(rgb565)
+        }
+    }
+
+    /// Set the source (ROM) resolution of frames you will submit. When this
+    /// differs from the panel size the client will automatically scale frames
+    /// before sending them to the device, matching libzedmd's `SetFrameSize`
+    /// behaviour. Call before the first [`render_rgb565_frame`] or
+    /// [`render_rgb888_frame`].
+    pub fn set_frame_size(&mut self, width: u32, height: u32) {
+        info!("Setting frame size to {}x{}", width, height);
+        self.rom_width = width;
+        self.rom_height = height;
+    }
+
+    /// Enable upscaling: when the source resolution is smaller than the panel,
+    /// frames are pixel-doubled (2×) instead of centred with black borders.
+    /// Matches libzedmd's `EnableUpscaling`. No device command is sent.
+    pub fn enable_upscaling(&mut self) {
+        info!("Upscaling enabled");
+        self.upscaling = true;
+    }
+
+    /// Disable upscaling: small sources are centred with black borders (default).
+    /// Matches libzedmd's `DisableUpscaling`. No device command is sent.
+    pub fn disable_upscaling(&mut self) {
+        info!("Upscaling disabled");
+        self.upscaling = false;
+    }
+
+    /// Enable true RGB888 transport: [`render_rgb888_frame`] will send
+    /// RGB888ZonesStream (command 0x04) instead of converting to RGB565 first.
+    /// Use this for maximum colour fidelity at the cost of ~50% more USB bandwidth.
+    /// Matches libzedmd's `EnableTrueRgb888(true)`. No device command is sent.
+    pub fn enable_true_rgb888(&mut self) {
+        info!("True RGB888 enabled");
+        self.true_rgb888 = true;
+    }
+
+    /// Disable true RGB888: [`render_rgb888_frame`] converts to RGB565 before
+    /// sending (default). Matches libzedmd's `EnableTrueRgb888(false)`.
+    pub fn disable_true_rgb888(&mut self) {
+        info!("True RGB888 disabled");
+        self.true_rgb888 = false;
     }
 
     /// Non-blocking check: returns `true` if the frame with the given ID has

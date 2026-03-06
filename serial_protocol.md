@@ -61,11 +61,9 @@ with no prefix. Every chunk receives exactly one `ZeDMDA` ACK.
 
 ### ACK reading
 
-The host reads the 6-byte ACK using a manual `read()` loop rather than
-`read_exact()`. This is important: if a `read()` call times out mid-ACK (having
-received e.g. 4 of 6 bytes), those bytes are **not** discarded — the loop
-retries until all 6 arrive. Using `read_exact()` would silently drop partial
-reads on timeout, permanently desyncing the ACK stream.
+After each chunk the host must read exactly 6 bytes from the device before
+sending the next chunk. Partial reads must be retried — the full 6-byte ACK
+must be received before proceeding.
 
 ---
 
@@ -199,27 +197,103 @@ Client                                     Device
 ### Zone-streaming frame (RGB565)
 
 Changed zones are collected, raw zone data is split into sub-frames at
-`ZEDMD_ZONES_BYTE_LIMIT_RGB565` (= `zone_w × zone_h × 2 × 16 + 16`, typically
-**1040 bytes** for an 8×4-pixel zone). Each sub-frame is zlib-compressed
-independently; the compressed size must not exceed `BUFFER_SIZE` (1152 bytes).
-If compression does not help, the chunk is sent uncompressed.
+`ZEDMD_ZONES_BYTE_LIMIT_RGB565` (= `zone_w × zone_h × 2 × 16 + 16` = **1040 bytes**
+for an 8×4-pixel zone). Each sub-frame is zlib-compressed independently; the
+compressed size must not exceed `BUFFER_SIZE` (1152 bytes). If compression does
+not help, the chunk is sent uncompressed.
 
-Each sub-frame is sent as a single `send_chunks` call containing both the
-`RGB565ZonesStream` command and the `RenderFrame` command back-to-back:
+Each sub-frame is an **independent firmware transaction** sent via its own
+`send_chunks` call. `RenderFrame` (cmd `0x06`) returns result `1` which causes
+the firmware to break out of the inner read loop and wait for a new `FRAME`
+header — so each sub-frame must have its own `FRAME` prefix and `RenderFrame`
+suffix. Sub-frames are sent in **reverse order** (matching C++ `rbegin/rend`
+iteration in `StreamBytes`):
 
 ```
 Client                                     Device
   │                                          │
-  │─ FRAME + ZeDMD + RGB565ZonesStream       │
+  │─ FRAME + ZeDMD + RGB565ZonesStream       │  sub-frame N (last, reversed)
   │    + size_hi + size_lo + compressed      │
-  │    + zone_data (compressed or raw)       │
-  │  + ZeDMD + RenderFrame + 0 + 0 + 0 ────▶│  chunk 1
+  │    + zone_data                           │
+  │  + ZeDMD + RenderFrame + 0 + 0 + 0 ────▶│  (padded to usbPackageSize)
   │◀──────────────── ZeDMDA ─────────────────│
   │─ (continuation chunks if payload > usbPackageSize) ▶│
-  │◀──────────────── ZeDMDA ─────────────────│  (one per chunk)
-  │                                          │  (device renders on RenderFrame)
-  │─ (repeat for each sub-frame) ───────────▶│
+  │◀──────────────── ZeDMDA ─────────────────│  (one ACK per chunk)
+  │                                          │
+  │─ FRAME + ZeDMD + RGB565ZonesStream       │  sub-frame N-1 …
+  │    + … + RenderFrame ───────────────────▶│
+  │◀──────────────── ZeDMDA ─────────────────│
+  │                                          │  (device renders on each RenderFrame)
 ```
+
+### Zone-streaming frame (RGB888)
+
+Identical to RGB565 zone streaming but uses command opcode `RGB888ZonesStream`
+(`0x04`) and 3 bytes per pixel instead of 2. The theoretical sub-frame byte
+limit would be `zone_w × zone_h × 3 × 16 + 16` = **1552 bytes**, but the
+firmware's `BUFFER_SIZE` is only **1152 bytes**. Payloads exceeding this trigger
+an on-screen "payloadSize > BUFFER_SIZE" error and a serial reset. The Rust
+implementation therefore caps `ZEDMD_ZONES_BYTE_LIMIT_RGB888` at **1152** so
+sub-frames never exceed the firmware buffer.
+
+The firmware sets an `rgb888ZoneStream` flag when it sees command `0x04`, then
+falls through to the same case `0x05` handler. It dispatches to `FillZoneRaw`
+(RGB888) vs `FillZoneRaw565` (RGB565) based on that flag.
+
+```
+Client                                     Device
+  │                                          │
+  │─ FRAME + ZeDMD + RGB888ZonesStream       │  sub-frame N (reversed)
+  │    + size_hi + size_lo + compressed      │
+  │    + zone_data                           │
+  │  + ZeDMD + RenderFrame + 0 + 0 + 0 ────▶│
+  │◀──────────────── ZeDMDA ─────────────────│
+  │─ (more sub-frames, each with FRAME … RenderFrame) ▶│
+  │◀──────────────── ZeDMDA ─────────────────│
+```
+
+---
+
+## Scaling and Frame Size
+
+Scaling is handled entirely **client-side** in libzedmd — the firmware always
+receives a full-panel-sized frame.
+
+`SetFrameSize(width, height)` tells the client the source resolution (e.g. the
+ROM's native resolution). On `RenderRgb888` / `RenderRgb565` the client calls
+`GetScaleMode` to decide how to transform the source frame to the panel size:
+
+| Scale mode | Condition                                       | Action                                          |
+|------------|-------------------------------------------------|-------------------------------------------------|
+| `255`      | Source == panel size                            | `memcpy` — no transformation                    |
+| `0`        | Source fits inside panel (with optional offset) | **Center** the source in the panel              |
+| `1`        | Source is larger than panel                     | **Scale down** (nearest-neighbour)              |
+| `2`        | Source is smaller and `upscaling` is enabled    | **Scale up 2×**, then center if panel is larger |
+
+### Upscaling flag
+
+`EnableUpscaling()` / `DisableUpscaling()` (opcodes `0x15` / `0x14`) set an
+`m_upscaling` flag in libzedmd. When `false` (default), small sources are
+**centred** with black borders. When `true`, they are **pixel-doubled** to fill
+the panel.
+
+These opcodes are sent to the device so it can store the preference, but the
+actual scaling arithmetic always runs on the host.
+
+### TrueRGB888 flag
+
+`EnableTrueRgb888(true)` sets `m_rgb888 = true` in libzedmd. When `false`
+(default), `RenderRgb888` converts the scaled RGB888 frame to RGB565 before
+sending (using command `0x05`). When `true`, the raw RGB888 data is sent using
+command `0x04`. There is no device-side opcode for this flag — it only changes
+which zone-stream command the client emits.
+
+> **Note**: libzedmd's own test suite (`test.cpp`) never calls
+> `EnableTrueRgb888` — all `RenderRgb888` calls go through the RGB888 → RGB565
+> conversion path (command `0x05`). Command `0x04` (`RGB888ZonesStream`) appears
+> to be untested in the reference implementation and does not work reliably in
+> practice. The recommended approach is to always use the RGB565 conversion path.
+> See also: <https://github.com/PPUC/libzedmd/issues/47>
 
 ---
 
@@ -288,15 +362,17 @@ colour component:
 Frames are divided into fixed-size zones for delta encoding. Only zones whose
 content has changed since the last frame are transmitted.
 
-| Parameter                       | Formula                         | Value (128×32 panel) |
-|---------------------------------|---------------------------------|----------------------|
-| Zone width (pixels)             | `width / 16`                    | 8                    |
-| Zone height (pixels)            | `height / 8`                    | 4                    |
-| Zones X                         | `width / zone_w`                | 16                   |
-| Zones Y                         | `height / zone_h`               | 8                    |
-| Total zones                     | `zones_x × zones_y`             | 128                  |
-| Zone bytes (RGB565)             | `zone_w × zone_h × 2`           | 64                   |
-| `ZEDMD_ZONES_BYTE_LIMIT_RGB565` | `zone_w × zone_h × 2 × 16 + 16` | 1040                 |
+| Parameter                       | Formula                          | Value (128×32 panel) |
+|---------------------------------|----------------------------------|----------------------|
+| Zone width (pixels)             | `width / 16`                     | 8                    |
+| Zone height (pixels)            | `height / 8`                     | 4                    |
+| Zones X                         | `width / zone_w`                 | 16                   |
+| Zones Y                         | `height / zone_h`                | 8                    |
+| Total zones                     | `zones_x × zones_y`              | 128                  |
+| Zone bytes (RGB565)             | `zone_w × zone_h × 2`            | 64                   |
+| Zone bytes (RGB888)             | `zone_w × zone_h × 3`            | 96                   |
+| `ZEDMD_ZONES_BYTE_LIMIT_RGB565` | `zone_w × zone_h × 2 × 16 + 16`  | 1040                 |
+| `ZEDMD_ZONES_BYTE_LIMIT_RGB888` | capped at firmware `BUFFER_SIZE` | 1152                 |
 
 > **Zone count correction**: a 128×32 panel has `(128/8) × (32/4)` = 16 × 8 =
 > **128 zones**, not 32. The earlier version of this document was wrong.
@@ -305,7 +381,8 @@ content has changed since the last frame are transmitted.
 
 Each changed zone in the sub-frame payload is encoded as:
 
-- **Non-black zone**: `[ zone_index (1 byte) ][ RGB565 pixels (zone_bytes) ]`
+- **Non-black zone**: `[ zone_index (1 byte) ][ pixels (zone_bytes) ]`
+  — `zone_bytes` is 64 for RGB565 (2 bytes/pixel) or 96 for RGB888 (3 bytes/pixel)
 - **All-black zone**: `[ zone_index + 128 (1 byte) ]` — no pixel data
 
 Zone indices are assigned left-to-right, top-to-bottom.
@@ -324,13 +401,18 @@ functionally equivalent for this purpose.
 ### Sub-frame splitting and compression
 
 1. Raw zone data is accumulated into a buffer.
-2. When the buffer exceeds `bufferSizeThreshold` (= `ZEDMD_ZONES_BYTE_LIMIT_RGB565
-   − zone_bytes_total`), the buffer is flushed as a sub-frame and a new one started.
+2. When the buffer exceeds `bufferSizeThreshold` (= `ZEDMD_ZONES_BYTE_LIMIT
+   − zone_bytes_total`, where `zone_bytes_total = zone_bytes + 1`), the buffer
+   is flushed as a sub-frame and a new one started.
+    - RGB565: limit = 1040, threshold = 1040 − 65 = 975
+    - RGB888: limit = 1152 (firmware cap), threshold = 1152 − 97 = 1055
 3. Each sub-frame is zlib-compressed (level 6). If compression produces a larger
    result, it is sent uncompressed.
 4. The compressed (or raw) size must be ≤ `BUFFER_SIZE` (1152 bytes) — the
    firmware sends a NACK and resets the serial port if this is exceeded.
-5. Each sub-frame payload is wrapped: `ZeDMD + RGB565ZonesStream + size + compressed_flag + data + ZeDMD + RenderFrame`.
+5. Each sub-frame is sent as an independent `send_chunks` call, wrapped as
+   `FRAME + ZeDMD + {RGB565|RGB888}ZonesStream + size + compressed_flag + data + ZeDMD + RenderFrame`.
+   Sub-frames are sent in **reverse order** (matching C++ `StreamBytes` `rbegin/rend`).
 
 ---
 

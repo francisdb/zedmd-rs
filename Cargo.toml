@@ -24,12 +24,20 @@ name = "plasma"
 path = "examples/plasma.rs"
 
 [[example]]
+name = "plasma_rgb888"
+path = "examples/plasma_rgb888.rs"
+
+[[example]]
 name = "rings"
 path = "examples/rings.rs"
 
 [[example]]
 name = "rainbow"
 path = "examples/rainbow.rs"
+
+[[example]]
+name = "scaling"
+path = "examples/scaling.rs"
 
 [dependencies]
 env_logger = "0.11.9"
