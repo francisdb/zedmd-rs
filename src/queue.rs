@@ -9,8 +9,9 @@ pub(crate) struct Frame {
 
 struct State {
     queue: VecDeque<Frame>,
-    next_id: u64, // ID to assign to the next pushed frame
-    sent_id: u64, // ID of the last frame successfully sent to the device
+    next_id: u64,     // ID to assign to the next pushed frame
+    sent_id: u64,     // ID of the last frame sent or dropped (for wait_for_frame)
+    frames_sent: u64, // count of frames actually sent over USB (for fps measurement)
     stopped: bool,
 }
 
@@ -27,6 +28,7 @@ impl FrameQueue {
                     queue: VecDeque::with_capacity(1),
                     next_id: 1,
                     sent_id: 0,
+                    frames_sent: 0,
                     stopped: false,
                 }),
                 Condvar::new(),
@@ -71,11 +73,12 @@ impl FrameQueue {
         let (lock, cvar) = &*self.inner;
         let mut state = lock.lock().unwrap();
         state.sent_id = id;
+        state.frames_sent += 1;
         cvar.notify_all();
     }
 
     /// Non-blocking check: returns `true` if the frame with the given ID
-    /// (or a later one) has already been sent to the device.
+    /// (or a later one) has already been sent or dropped.
     pub fn is_frame_sent(&self, id: u64) -> bool {
         let (lock, _) = &*self.inner;
         let state = lock.lock().unwrap();
@@ -90,9 +93,9 @@ impl FrameQueue {
             .unwrap();
     }
 
-    /// The number of frames sent so far — used for fps measurement.
+    /// The number of frames actually sent over USB — excludes dropped frames.
     pub fn sent_count(&self) -> u64 {
-        self.inner.0.lock().unwrap().sent_id
+        self.inner.0.lock().unwrap().frames_sent
     }
 
     /// Signal the consumer thread to exit.

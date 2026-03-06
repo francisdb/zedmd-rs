@@ -75,8 +75,16 @@ fn run() -> io::Result<()> {
         frames += 1;
 
         if frames.is_multiple_of(150) {
-            let fps = frames as f64 / start.elapsed().as_secs_f64();
-            info!("submit {:.1} fps  |  usb {:.1} fps", fps, comm.usb_fps());
+            let elapsed = start.elapsed().as_secs_f64();
+            let submit_fps = frames as f64 / elapsed;
+            let usb_fps = comm.usb_fps();
+            let dropped = submit_fps - usb_fps;
+            info!(
+                "submit {:.1} fps  |  usb {:.1} fps  |  dropped {:.1} fps",
+                submit_fps,
+                usb_fps,
+                dropped.max(0.0)
+            );
         }
 
         if let Some(remaining) = frame_budget.checked_sub(frame_start.elapsed()) {
