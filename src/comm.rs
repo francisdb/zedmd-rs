@@ -97,6 +97,57 @@ impl SharedZeDMDComm {
         result
     }
 
+    /// Send a command with arbitrary byte payload (used for strings like WiFi credentials).
+    pub fn send_command_with_buffer(
+        &mut self,
+        cmd: ZedmdCommCommand,
+        buffer: &[u8],
+    ) -> io::Result<()> {
+        let write_at_once = self.write_at_once;
+        let mut payload =
+            Vec::with_capacity(FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() + 5 + buffer.len());
+        payload.extend_from_slice(&FRAME_HEADER);
+        payload.extend_from_slice(&CTRL_CHARS_HEADER);
+        payload.push(cmd as u8);
+        let size = buffer.len() as u16;
+        payload.push((size >> 8) as u8); // size high byte
+        payload.push((size & 0xFF) as u8); // size low byte
+        payload.push(0); // compression flag
+        payload.extend_from_slice(buffer);
+        let port = self
+            .port
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
+        let result = send_chunks(port, &payload, write_at_once);
+        if result.is_ok() {
+            self.last_keep_alive = Instant::now();
+        }
+        result
+    }
+
+    /// Send a command with an integer (u16) payload.
+    pub fn send_command_with_u16(&mut self, cmd: ZedmdCommCommand, value: u16) -> io::Result<()> {
+        let write_at_once = self.write_at_once;
+        let mut payload = Vec::with_capacity(FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() + 7);
+        payload.extend_from_slice(&FRAME_HEADER);
+        payload.extend_from_slice(&CTRL_CHARS_HEADER);
+        payload.push(cmd as u8);
+        payload.push(0); // size high byte (payload = 2 bytes)
+        payload.push(2); // size low byte
+        payload.push(0); // compression flag
+        payload.push((value & 0xFF) as u8);
+        payload.push((value >> 8) as u8);
+        let port = self
+            .port
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
+        let result = send_chunks(port, &payload, write_at_once);
+        if result.is_ok() {
+            self.last_keep_alive = Instant::now();
+        }
+        result
+    }
+
     /// Render a full RGB565 frame using the zone-streaming protocol.
     /// Only zones whose content has changed since the last call are transmitted.
     pub fn render_rgb565_frame(&mut self, pixels: &[u16]) -> io::Result<()> {
