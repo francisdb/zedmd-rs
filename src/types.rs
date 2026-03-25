@@ -120,3 +120,36 @@ impl Display for RgbOrder {
         write!(f, "{}", s)
     }
 }
+
+/// Transport mode IDs used by ZeDMD firmware (`SetTransport`, 0x2D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    Usb = 0,
+    WifiUdp = 1,
+    WifiTcp = 2,
+    Spi = 3,
+}
+
+impl TransportMode {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Usb),
+            1 => Some(Self::WifiUdp),
+            2 => Some(Self::WifiTcp),
+            3 => Some(Self::Spi),
+            _ => None,
+        }
+    }
+}
+
+impl Display for TransportMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Usb => "USB",
+            Self::WifiUdp => "WiFi UDP",
+            Self::WifiTcp => "WiFi TCP",
+            Self::Spi => "SPI",
+        };
+        write!(f, "{}", s)
+    }
+}

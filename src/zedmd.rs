@@ -4,7 +4,7 @@ use crate::comm::{
 };
 use crate::queue::{FramePixels, FrameQueue};
 use crate::scale::{scale_rgb565, scale_rgb888};
-use crate::types::{RgbOrder, ZedmdCommCommand};
+use crate::types::{RgbOrder, TransportMode, ZedmdCommCommand};
 use log::{error, info};
 use serialport::{DataBits, Parity, StopBits};
 /// Public ZeDMD API — mirrors ZeDMD.cpp/.h from libzedmd.
@@ -470,6 +470,29 @@ impl ZeDMDComm {
             .send_command_with_byte(ZedmdCommCommand::SetI2sspeed, speed)
     }
 
+    /// Set the transport mode (`USB`, `WiFi UDP`, `WiFi TCP`, `SPI`).
+    ///
+    /// The mode flag is updated immediately in RAM, but becomes active only
+    /// after reboot. Call [`save_settings`] to persist it.
+    pub fn set_transport_mode(&self, mode: TransportMode) -> io::Result<()> {
+        info!("Setting transport mode to {}", mode);
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_byte(ZedmdCommCommand::SetTransport, mode as u8)
+    }
+
+    /// Set the WiFi UDP inter-packet delay (0-9). Only relevant in WiFi UDP mode.
+    /// Call [`save_settings`] to persist.
+    pub fn set_udp_delay(&self, delay: u8) -> io::Result<()> {
+        let delay = delay.min(9);
+        info!("Setting UDP delay to {}", delay);
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_byte(ZedmdCommCommand::SetUdpDelay, delay)
+    }
+
     /// Set the panel latch blanking cycles. Increase if you see row bleed-through
     /// or ghosting between rows. Call [`save_settings`] to persist.
     pub fn set_panel_latch_blanking(&self, blanking: u8) -> io::Result<()> {
@@ -519,5 +542,64 @@ impl ZeDMDComm {
             .lock()
             .unwrap()
             .send_simple_command(ZedmdCommCommand::DisableDebug)
+    }
+
+    /// Set the WiFi SSID (network name). The device must have WiFi capability enabled.
+    /// Call [`save_settings`] to persist across reboots. Maximum 31 characters.
+    pub fn set_wifi_ssid(&self, ssid: &str) -> io::Result<()> {
+        if ssid.len() > 31 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SSID must be 31 characters or less",
+            ));
+        }
+        info!("Setting WiFi SSID to '{}'", ssid);
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_buffer(ZedmdCommCommand::SetWiFiSSID, ssid.as_bytes())
+    }
+
+    /// Set the WiFi password. The device must have WiFi capability enabled.
+    /// Call [`save_settings`] to persist across reboots. Maximum 63 characters.
+    pub fn set_wifi_password(&self, password: &str) -> io::Result<()> {
+        if password.len() > 63 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Password must be 63 characters or less",
+            ));
+        }
+        info!("Setting WiFi password");
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_buffer(ZedmdCommCommand::SetWiFiPassword, password.as_bytes())
+    }
+
+    /// Set the WiFi port number (TCP/UDP port the device listens on).
+    /// Valid range is 1-65535. Call [`save_settings`] to persist across reboots.
+    pub fn set_wifi_port(&self, port: u16) -> io::Result<()> {
+        if port == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Port must be between 1 and 65535",
+            ));
+        }
+        info!("Setting WiFi port to {}", port);
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_u16(ZedmdCommCommand::SetWiFiPort, port)
+    }
+
+    /// Set the WiFi transmit power level (0-127, where 127 is maximum power).
+    /// Lower values reduce power consumption and interference. Default is usually 80.
+    /// Call [`save_settings`] to persist across reboots.
+    pub fn set_wifi_power(&self, power: u8) -> io::Result<()> {
+        info!("Setting WiFi power to {}", power);
+        self.comm
+            .lock()
+            .unwrap()
+            .send_command_with_byte(ZedmdCommCommand::SetWiFiPower, power)
     }
 }
