@@ -18,7 +18,8 @@ pub(crate) const ZEDMD_COMM_MAX_SERIAL_WRITE_AT_ONCE: usize = 1920;
 pub(crate) const ZEDMD_COMM_DEFAULT_SERIAL_WRITE_AT_ONCE: usize = 64;
 pub(crate) const ZEDMD_COMM_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms
 pub(crate) const ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS: u64 = 200;
-pub(crate) const ZEDMD_WIFI_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms — matches firmware's UDP timeout
+pub(crate) const ZEDMD_WIFI_UDP_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms — matches firmware's UDP timeout
+pub(crate) const ZEDMD_WIFI_TCP_KEEP_ALIVE_INTERVAL: u128 = 100; // ms — matches libzedmd's TCP setting
 
 /// ZEDMD_ZONES_BYTE_LIMIT_RGB565 = 128*4*2+16 = 1040
 pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB565: usize = 128 * 4 * 2 + 16;
@@ -344,10 +345,10 @@ impl SharedZeDMDComm {
             return Ok(());
         }
         let now = Instant::now();
-        let interval = if self.transport.is_usb() {
-            ZEDMD_COMM_KEEP_ALIVE_INTERVAL
-        } else {
-            ZEDMD_WIFI_KEEP_ALIVE_INTERVAL
+        let interval = match &self.transport {
+            Transport::Usb(_) => ZEDMD_COMM_KEEP_ALIVE_INTERVAL,
+            Transport::WifiUdp(_) => ZEDMD_WIFI_UDP_KEEP_ALIVE_INTERVAL,
+            Transport::WifiTcp(_) => ZEDMD_WIFI_TCP_KEEP_ALIVE_INTERVAL,
         };
         if now.duration_since(self.last_keep_alive).as_millis() < interval {
             return Ok(());

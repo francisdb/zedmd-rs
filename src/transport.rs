@@ -1,4 +1,4 @@
-/// Transport abstraction over USB serial and WiFi UDP.
+/// Transport abstraction over USB serial and WiFi (UDP / TCP).
 ///
 /// Higher-level code (`SharedZeDMDComm`) builds the same command payload — a
 /// `FRAME` header followed by one or more `ZeDMD`-prefixed commands — and hands
@@ -11,10 +11,13 @@
 ///   `udp_delay` ms between them, and never reads back. The firmware's
 ///   `HandleData()` scans for the inner `ZeDMD` ctrl-chars marker, so it
 ///   tolerates the leading `FRAME` bytes (they don't match and are discarded).
+/// - **WiFi TCP** writes the payload as a single contiguous stream — TCP
+///   handles ordering and retransmission, so no chunking or delay is needed
+///   and there are no ACKs at the application layer.
 use log::{debug, error};
 use serialport::SerialPort;
-use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::io::{self, Write};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -26,6 +29,7 @@ const CTRL_CHARS_HEADER: [u8; 5] = [0x5A, 0x65, 0x44, 0x4D, 0x44];
 pub(crate) enum Transport {
     Usb(UsbTransport),
     WifiUdp(WifiUdpTransport),
+    WifiTcp(WifiTcpTransport),
 }
 
 pub(crate) struct UsbTransport {
@@ -37,6 +41,11 @@ pub(crate) struct WifiUdpTransport {
     pub socket: UdpSocket,
     pub target: SocketAddr,
     pub udp_delay: Duration,
+}
+
+pub(crate) struct WifiTcpTransport {
+    pub stream: TcpStream,
+    pub target: SocketAddr,
 }
 
 impl std::fmt::Debug for Transport {
@@ -52,6 +61,10 @@ impl std::fmt::Debug for Transport {
                 .field("target", &w.target)
                 .field("udp_delay", &w.udp_delay)
                 .finish(),
+            Transport::WifiTcp(t) => f
+                .debug_struct("WifiTcpTransport")
+                .field("target", &t.target)
+                .finish(),
         }
     }
 }
@@ -62,6 +75,7 @@ impl Transport {
         match self {
             Transport::Usb(t) => t.send(data),
             Transport::WifiUdp(t) => t.send(data),
+            Transport::WifiTcp(t) => t.send(data),
         }
     }
 
@@ -72,6 +86,7 @@ impl Transport {
                 None => Ok(()),
             },
             Transport::WifiUdp(_) => Ok(()),
+            Transport::WifiTcp(t) => t.stream.flush(),
         }
     }
 
@@ -83,7 +98,7 @@ impl Transport {
     pub fn write_at_once(&self) -> usize {
         match self {
             Transport::Usb(t) => t.write_at_once,
-            Transport::WifiUdp(_) => 0,
+            Transport::WifiUdp(_) | Transport::WifiTcp(_) => 0,
         }
     }
 
@@ -102,6 +117,14 @@ impl UsbTransport {
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
         send_chunks_usb(port, data, self.write_at_once)
+    }
+}
+
+impl WifiTcpTransport {
+    fn send(&mut self, data: &[u8]) -> io::Result<()> {
+        self.stream.write_all(data)?;
+        debug!("WiFi TCP sent {} bytes", data.len());
+        Ok(())
     }
 }
 
