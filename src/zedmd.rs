@@ -4,14 +4,14 @@ use crate::comm::{
 };
 use crate::queue::{FramePixels, FrameQueue};
 use crate::scale::{scale_rgb565, scale_rgb888};
-use crate::transport::{Transport, WifiUdpTransport};
+use crate::transport::{Transport, WifiTcpTransport, WifiUdpTransport};
 use crate::types::{RgbOrder, TransportMode, ZedmdCommCommand};
 use crate::wifi_handshake::fetch_handshake;
 use log::{error, info, warn};
 use serialport::{DataBits, Parity, StopBits};
 /// Public ZeDMD API — mirrors ZeDMD.cpp/.h from libzedmd.
 use std::io;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::sleep;
@@ -55,13 +55,8 @@ pub fn connect_wifi(host: &str) -> io::Result<ZeDMDComm> {
 
 fn connect_wifi_internal(host: &str) -> io::Result<SharedZeDMDComm> {
     let h = fetch_handshake(host)?;
-    if h.tcp {
-        warn!(
-            "Device reports TCP transport; this client only implements UDP — proceeding as UDP, may fail"
-        );
-    }
 
-    // Resolve host (without HTTP port) to an IP for the UDP target.
+    // Resolve host (without HTTP port) to an IP for the streaming target.
     let ip: IpAddr = (host, 0)
         .to_socket_addrs()?
         .next()
@@ -71,17 +66,28 @@ fn connect_wifi_internal(host: &str) -> io::Result<SharedZeDMDComm> {
         })?;
     let target = SocketAddr::new(ip, h.port);
 
-    let socket = UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
-    socket.connect(target)?; // sets default destination; we still use send_to for clarity
+    let (transport, kind) = if h.tcp {
+        let stream = TcpStream::connect_timeout(&target, Duration::from_secs(5))?;
+        stream.set_nodelay(true)?;
+        (
+            Transport::WifiTcp(WifiTcpTransport { stream, target }),
+            "WiFi/TCP",
+        )
+    } else {
+        let socket = UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+        socket.connect(target)?; // sets default destination; we still use send_to for clarity
+        (
+            Transport::WifiUdp(WifiUdpTransport {
+                socket,
+                target,
+                udp_delay: Duration::from_millis(h.udp_delay as u64),
+            }),
+            "WiFi/UDP",
+        )
+    };
 
     let zone_width = if h.width > 0 { h.width / 16 } else { 0 };
     let zone_height = if h.height > 0 { h.height / 8 } else { 0 };
-
-    let transport = Transport::WifiUdp(WifiUdpTransport {
-        socket,
-        target,
-        udp_delay: Duration::from_millis(h.udp_delay as u64),
-    });
 
     let mut internal = SharedZeDMDComm {
         width: h.width,
@@ -112,8 +118,8 @@ fn connect_wifi_internal(host: &str) -> io::Result<SharedZeDMDComm> {
     };
 
     info!(
-        "ZeDMD {} found: WiFi/UDP target={}, {}x{}, ssid={}, udp_delay={}ms",
-        internal.firmware_version, target, internal.width, internal.height, h.ssid, h.udp_delay
+        "ZeDMD {} found: {} target={}, {}x{}, ssid={}",
+        internal.firmware_version, kind, target, internal.width, internal.height, h.ssid
     );
 
     // Reset zone hashes by clearing the display so device matches our state.
