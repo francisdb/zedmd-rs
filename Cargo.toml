@@ -40,7 +40,7 @@ name = "scaling"
 path = "examples/scaling.rs"
 
 [dependencies]
-env_logger = "0.11.9"
+env_logger = "0.11.10"
 log = "0.4.29"
 miniz_oxide = "0.9.1"
 serialport = "4.8.1"
