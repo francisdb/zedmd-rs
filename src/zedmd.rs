@@ -4,11 +4,14 @@ use crate::comm::{
 };
 use crate::queue::{FramePixels, FrameQueue};
 use crate::scale::{scale_rgb565, scale_rgb888};
+use crate::transport::{Transport, WifiUdpTransport};
 use crate::types::{RgbOrder, TransportMode, ZedmdCommCommand};
-use log::{error, info};
+use crate::wifi_handshake::fetch_handshake;
+use log::{error, info, warn};
 use serialport::{DataBits, Parity, StopBits};
 /// Public ZeDMD API — mirrors ZeDMD.cpp/.h from libzedmd.
 use std::io;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::sleep;
@@ -39,6 +42,86 @@ pub struct ZeDMDComm {
 
 pub fn connect() -> io::Result<ZeDMDComm> {
     let internal = connect_internal()?;
+    Ok(spawn_with(internal))
+}
+
+/// Connect over WiFi UDP. `host` may be an IP address (`10.0.1.173`) or an
+/// mDNS / DNS hostname (`ZeDMD-WiFi.local`). The handshake URL `http://{host}/handshake`
+/// is fetched to discover the device's UDP port and capabilities.
+pub fn connect_wifi(host: &str) -> io::Result<ZeDMDComm> {
+    let internal = connect_wifi_internal(host)?;
+    Ok(spawn_with(internal))
+}
+
+fn connect_wifi_internal(host: &str) -> io::Result<SharedZeDMDComm> {
+    let h = fetch_handshake(host)?;
+    if h.tcp {
+        warn!(
+            "Device reports TCP transport; this client only implements UDP — proceeding as UDP, may fail"
+        );
+    }
+
+    // Resolve host (without HTTP port) to an IP for the UDP target.
+    let ip: IpAddr = (host, 0)
+        .to_socket_addrs()?
+        .next()
+        .map(|sa| sa.ip())
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("Resolve failed: {}", host))
+        })?;
+    let target = SocketAddr::new(ip, h.port);
+
+    let socket = UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    socket.connect(target)?; // sets default destination; we still use send_to for clarity
+
+    let zone_width = if h.width > 0 { h.width / 16 } else { 0 };
+    let zone_height = if h.height > 0 { h.height / 8 } else { 0 };
+
+    let transport = Transport::WifiUdp(WifiUdpTransport {
+        socket,
+        target,
+        udp_delay: Duration::from_millis(h.udp_delay as u64),
+    });
+
+    let mut internal = SharedZeDMDComm {
+        width: h.width,
+        height: h.height,
+        zone_width,
+        zone_height,
+        firmware_version: h.firmware_version,
+        brightness: h.brightness,
+        rgb_mode: h.rgb_mode,
+        y_offset: h.y_offset,
+        panel_clkphase: h.panel_clkphase,
+        panel_driver: h.panel_driver,
+        panel_i2sspeed: h.panel_i2sspeed,
+        panel_latch_blanking: h.panel_latch_blanking,
+        panel_min_refresh_rate: h.panel_min_refresh_rate,
+        udp_delay: h.udp_delay,
+        half: h.half,
+        s3: h.s3,
+        id: h.id,
+        device_name: format!("{}:{}", host, h.port),
+        transport,
+        keep_alive: false,
+        last_keep_alive: Instant::now(),
+        zone_hashes: vec![
+            1u64;
+            ((h.width / zone_width.max(1)) * (h.height / zone_height.max(1))) as usize
+        ],
+    };
+
+    info!(
+        "ZeDMD {} found: WiFi/UDP target={}, {}x{}, ssid={}, udp_delay={}ms",
+        internal.firmware_version, target, internal.width, internal.height, h.ssid, h.udp_delay
+    );
+
+    // Reset zone hashes by clearing the display so device matches our state.
+    let _ = internal.send_simple_command(ZedmdCommCommand::ClearScreen);
+    Ok(internal)
+}
+
+fn spawn_with(internal: SharedZeDMDComm) -> ZeDMDComm {
     let panel_width = internal.width;
     let panel_height = internal.height;
     let comm = Arc::new(Mutex::new(internal));
@@ -66,7 +149,7 @@ pub fn connect() -> io::Result<ZeDMDComm> {
         })
         .expect("Failed to spawn zedmd-stream thread");
 
-    Ok(ZeDMDComm {
+    ZeDMDComm {
         comm,
         queue,
         thread: Some(handle),
@@ -76,7 +159,7 @@ pub fn connect() -> io::Result<ZeDMDComm> {
         rom_height: panel_height,
         upscaling: false,
         true_rgb888: false,
-    })
+    }
 }
 
 impl Drop for ZeDMDComm {
@@ -101,19 +184,30 @@ impl ZeDMDComm {
     pub fn stop(&mut self) -> io::Result<()> {
         let mut comm = self.comm.lock().unwrap();
         comm.keep_alive = false;
-        if let Some(port) = &mut comm.port {
-            let _ = port.flush();
-        }
+        let _ = comm.transport.flush();
         info!("ZeDMDComm stopped");
         Ok(())
     }
 
+    /// Reconnect to a USB device. WiFi reconnect is not currently implemented.
     pub fn reconnect(&mut self) -> io::Result<()> {
         let device_name = {
-            let mut comm = self.comm.lock().unwrap();
-            comm.port = None;
+            let comm = self.comm.lock().unwrap();
+            if !comm.transport.is_usb() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "reconnect() is only implemented for USB transport",
+                ));
+            }
             comm.device_name.clone()
         };
+        // Drop the existing serial port so it can be reopened.
+        {
+            let mut comm = self.comm.lock().unwrap();
+            if let Transport::Usb(t) = &mut comm.transport {
+                t.port = None;
+            }
+        }
         info!("Reconnecting to {}...", device_name);
         sleep(Duration::from_millis(2000));
         let port = serialport::new(&device_name, ZEDMD_COMM_BAUD_RATE)
@@ -141,7 +235,6 @@ impl ZeDMDComm {
         comm.zone_width = internal.zone_width;
         comm.zone_height = internal.zone_height;
         comm.firmware_version = internal.firmware_version;
-        comm.write_at_once = internal.write_at_once;
         comm.brightness = internal.brightness;
         comm.rgb_mode = internal.rgb_mode;
         comm.y_offset = internal.y_offset;
@@ -154,7 +247,7 @@ impl ZeDMDComm {
         comm.half = internal.half;
         comm.s3 = internal.s3;
         comm.id = internal.id;
-        comm.port = internal.port;
+        comm.transport = internal.transport;
         comm.zone_hashes = internal.zone_hashes;
         comm.last_keep_alive = Instant::now();
         Ok(())
@@ -338,8 +431,9 @@ impl ZeDMDComm {
 
     /// USB packet size in bytes. The device sends this at handshake.
     /// Each USB packet is padded/split to this size. Valid range: 32–1920.
+    /// Returns 0 when connected via WiFi (chunking is fixed at 1400 bytes there).
     pub fn write_at_once(&self) -> usize {
-        self.comm.lock().unwrap().write_at_once
+        self.comm.lock().unwrap().transport.write_at_once()
     }
 
     /// Display brightness, 0 (off) to 255 (maximum).
@@ -401,8 +495,12 @@ impl ZeDMDComm {
             size, multiplier
         );
         let mut comm = self.comm.lock().unwrap();
+        if !comm.transport.is_usb() {
+            warn!("set_usb_package_size has no effect on the WiFi transport");
+            return Ok(());
+        }
         comm.send_command_with_byte(ZedmdCommCommand::SetUsbPackageSizeMultiplier, multiplier)?;
-        comm.write_at_once = size as usize;
+        comm.transport.set_write_at_once(size as usize);
         Ok(())
     }
 

@@ -1,12 +1,13 @@
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use serialport::SerialPortType::UsbPort;
 use serialport::{DataBits, Parity, SerialPort, StopBits};
 /// Serial transport layer — mirrors ZeDMDComm.cpp/.h from libzedmd.
 /// Handles connection, handshake, chunked writes and ACK protocol.
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use crate::transport::{Transport, UsbTransport};
 use crate::types::ZedmdCommCommand;
 use miniz_oxide::deflate::compress_to_vec_zlib;
 
@@ -17,6 +18,7 @@ pub(crate) const ZEDMD_COMM_MAX_SERIAL_WRITE_AT_ONCE: usize = 1920;
 pub(crate) const ZEDMD_COMM_DEFAULT_SERIAL_WRITE_AT_ONCE: usize = 64;
 pub(crate) const ZEDMD_COMM_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms
 pub(crate) const ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS: u64 = 200;
+pub(crate) const ZEDMD_WIFI_KEEP_ALIVE_INTERVAL: u128 = 3000; // ms — matches firmware's UDP timeout
 
 /// ZEDMD_ZONES_BYTE_LIMIT_RGB565 = 128*4*2+16 = 1040
 pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB565: usize = 128 * 4 * 2 + 16;
@@ -37,7 +39,6 @@ pub(crate) struct SharedZeDMDComm {
     pub zone_width: u32,
     pub zone_height: u32,
     pub firmware_version: String,
-    pub write_at_once: usize,
     pub brightness: u8,
     pub rgb_mode: u8,
     pub y_offset: u8,
@@ -51,7 +52,7 @@ pub(crate) struct SharedZeDMDComm {
     pub s3: bool,
     pub id: u16,
     pub device_name: String,
-    pub port: Option<Box<dyn SerialPort>>,
+    pub transport: Transport,
     pub keep_alive: bool,
     pub last_keep_alive: Instant,
     /// Hashes of the last-sent zone contents, used to skip unchanged zones.
@@ -62,13 +63,8 @@ pub(crate) struct SharedZeDMDComm {
 impl SharedZeDMDComm {
     /// Send a simple command (no payload) using the full framing protocol.
     pub fn send_simple_command(&mut self, cmd: ZedmdCommCommand) -> io::Result<()> {
-        let write_at_once = self.write_at_once;
         let payload = build_payload_simple(cmd);
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
-        let result = send_chunks(port, &payload, write_at_once);
+        let result = self.transport.send(&payload);
         if result.is_ok() {
             self.last_keep_alive = Instant::now();
         }
@@ -77,7 +73,6 @@ impl SharedZeDMDComm {
 
     /// Send a command with a single byte of payload.
     pub fn send_command_with_byte(&mut self, cmd: ZedmdCommCommand, value: u8) -> io::Result<()> {
-        let write_at_once = self.write_at_once;
         let mut payload = Vec::with_capacity(FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() + 5);
         payload.extend_from_slice(&FRAME_HEADER);
         payload.extend_from_slice(&CTRL_CHARS_HEADER);
@@ -86,11 +81,7 @@ impl SharedZeDMDComm {
         payload.push(1); // size low byte
         payload.push(0); // compression flag
         payload.push(value);
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
-        let result = send_chunks(port, &payload, write_at_once);
+        let result = self.transport.send(&payload);
         if result.is_ok() {
             self.last_keep_alive = Instant::now();
         }
@@ -103,7 +94,6 @@ impl SharedZeDMDComm {
         cmd: ZedmdCommCommand,
         buffer: &[u8],
     ) -> io::Result<()> {
-        let write_at_once = self.write_at_once;
         let mut payload =
             Vec::with_capacity(FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() + 5 + buffer.len());
         payload.extend_from_slice(&FRAME_HEADER);
@@ -114,11 +104,7 @@ impl SharedZeDMDComm {
         payload.push((size & 0xFF) as u8); // size low byte
         payload.push(0); // compression flag
         payload.extend_from_slice(buffer);
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
-        let result = send_chunks(port, &payload, write_at_once);
+        let result = self.transport.send(&payload);
         if result.is_ok() {
             self.last_keep_alive = Instant::now();
         }
@@ -127,7 +113,6 @@ impl SharedZeDMDComm {
 
     /// Send a command with an integer (u16) payload.
     pub fn send_command_with_u16(&mut self, cmd: ZedmdCommCommand, value: u16) -> io::Result<()> {
-        let write_at_once = self.write_at_once;
         let mut payload = Vec::with_capacity(FRAME_HEADER.len() + CTRL_CHARS_HEADER.len() + 7);
         payload.extend_from_slice(&FRAME_HEADER);
         payload.extend_from_slice(&CTRL_CHARS_HEADER);
@@ -137,11 +122,7 @@ impl SharedZeDMDComm {
         payload.push(0); // compression flag
         payload.push((value & 0xFF) as u8);
         payload.push((value >> 8) as u8);
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
-        let result = send_chunks(port, &payload, write_at_once);
+        let result = self.transport.send(&payload);
         if result.is_ok() {
             self.last_keep_alive = Instant::now();
         }
@@ -238,12 +219,6 @@ impl SharedZeDMDComm {
         let mut all_zone_data: Vec<u8> = Vec::new();
         let mut changed_zones = 0usize;
         let mut idx: u8 = 0;
-
-        let write_at_once = self.write_at_once;
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
 
         for zy in 0..zones_y {
             for zx in 0..zones_x {
@@ -350,7 +325,7 @@ impl SharedZeDMDComm {
             payload.push(0);
             payload.push(0);
             payload.push(0);
-            send_chunks(port, &payload, write_at_once)?;
+            self.transport.send(&payload)?;
         }
 
         debug!(
@@ -369,18 +344,18 @@ impl SharedZeDMDComm {
             return Ok(());
         }
         let now = Instant::now();
-        if now.duration_since(self.last_keep_alive).as_millis() < ZEDMD_COMM_KEEP_ALIVE_INTERVAL {
+        let interval = if self.transport.is_usb() {
+            ZEDMD_COMM_KEEP_ALIVE_INTERVAL
+        } else {
+            ZEDMD_WIFI_KEEP_ALIVE_INTERVAL
+        };
+        if now.duration_since(self.last_keep_alive).as_millis() < interval {
             return Ok(());
         }
         self.last_keep_alive = now;
         let payload = build_payload_simple(ZedmdCommCommand::KeepAlive);
-        let write_at_once = self.write_at_once;
-        let port = self
-            .port
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "No port connected"))?;
         debug!("Sending keep-alive");
-        send_chunks(port, &payload, write_at_once)
+        self.transport.send(&payload)
     }
 }
 
@@ -522,13 +497,17 @@ pub(crate) fn try_handshake(
             )
         };
 
+        let transport = Transport::Usb(UsbTransport {
+            port: Some(port),
+            write_at_once,
+        });
+
         let mut internal = SharedZeDMDComm {
             width,
             height,
             zone_width,
             zone_height,
             firmware_version: format!("{}.{}.{}", data[8], data[9], data[10]),
-            write_at_once,
             brightness: data[13],
             rgb_mode: data[14],
             y_offset: data[15],
@@ -542,7 +521,7 @@ pub(crate) fn try_handshake(
             s3: (data[22] & 0b00000010) != 0,
             id: data[23] as u16 + data[24] as u16 * 256,
             device_name: port_name,
-            port: Some(port),
+            transport,
             keep_alive: false,
             last_keep_alive: Instant::now(),
             zone_hashes: vec![
@@ -559,12 +538,12 @@ pub(crate) fn try_handshake(
             internal.device_name,
             internal.width,
             internal.height,
-            internal.write_at_once
+            internal.transport.write_at_once()
         );
-        if internal.write_at_once <= 64 {
+        if internal.transport.write_at_once() <= 64 {
             warn!(
                 "The ZeDMD USB package size of {} is very low. Try to increase it for smoother animations.",
-                internal.write_at_once
+                internal.transport.write_at_once()
             );
         }
         if internal.panel_min_refresh_rate <= 30 {
@@ -574,9 +553,9 @@ pub(crate) fn try_handshake(
             );
         }
 
-        flush_and_discard(internal.port.as_mut().unwrap());
-        if let Some(port) = internal.port.as_mut() {
-            let _ = port.set_timeout(Duration::from_millis(ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS));
+        if let Transport::Usb(UsbTransport { port: Some(p), .. }) = &mut internal.transport {
+            flush_and_discard(p);
+            let _ = p.set_timeout(Duration::from_millis(ZEDMD_COMM_SERIAL_READ_TIMEOUT_MS));
         }
         // Clear the display so the device state matches our zone_hashes (all black).
         let _ = internal.send_simple_command(ZedmdCommCommand::ClearScreen);
@@ -595,91 +574,6 @@ pub(crate) fn build_payload_simple(cmd: ZedmdCommCommand) -> Vec<u8> {
     payload.push(0); // size low byte
     payload.push(0); // compression flag
     payload
-}
-
-/// Send `data` to the device using the firmware's USB transport protocol.
-///
-/// `data` must start with the FRAME header (5 bytes). The firmware scans for
-/// FRAME byte-by-byte, then reads the remainder of the `write_at_once`-byte
-/// packet. The data is split at `write_at_once` boundaries; each chunk is
-/// zero-padded. Device sends one ACK (`ZeDMDA`, 6 bytes) per chunk.
-pub(crate) fn send_chunks(
-    port: &mut Box<dyn SerialPort>,
-    data: &[u8],
-    write_at_once: usize,
-) -> io::Result<()> {
-    let write_at_once = write_at_once.max(ZEDMD_COMM_MIN_SERIAL_WRITE_AT_ONCE);
-    let mut sent = 0;
-    let total = data.len();
-
-    while sent < total {
-        let chunk_len = write_at_once.min(total - sent);
-        let mut packet = vec![0u8; write_at_once];
-        packet[..chunk_len].copy_from_slice(&data[sent..sent + chunk_len]);
-        sent += chunk_len;
-
-        log_bytes(
-            &format!("Sending packet ({}/{} bytes)", sent, total),
-            &packet,
-        );
-        port.write_all(&packet)?;
-        // No flush — kernel transmits immediately at 921600 baud.
-        // Flushing before reading the ACK adds unnecessary latency.
-
-        // Read the 6-byte ACK with a manual retry loop to handle partial reads.
-        // Using read() instead of read_exact() avoids losing bytes on a timeout
-        // mid-read which would permanently desync the ACK stream.
-        let mut ack = [0u8; 6];
-        let mut ack_read = 0;
-        while ack_read < 6 {
-            match port.read(&mut ack[ack_read..]) {
-                Ok(0) => {
-                    error!("ACK read returned 0 bytes (sent {}/{} bytes)", sent, total);
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "ACK read returned 0 bytes",
-                    ));
-                }
-                Ok(n) => {
-                    ack_read += n;
-                }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    if ack_read == 0 {
-                        error!(
-                            "ACK timeout after sending packet (sent {}/{} bytes)",
-                            sent, total
-                        );
-                        return Err(io::Error::new(io::ErrorKind::TimedOut, "ACK timeout"));
-                    }
-                    // Partial read — keep waiting for the rest
-                }
-                Err(e) => {
-                    error!("ACK read error: {}", e);
-                    return Err(e);
-                }
-            }
-        }
-        log_bytes("ACK received", &ack);
-        if ack[..5] != CTRL_CHARS_HEADER {
-            error!("Bad ACK header: {:02x?}", &ack[..6]);
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Bad ACK header"));
-        }
-        match ack[5] {
-            b'A' => debug!("Packet ACK OK"),
-            b'F' => {
-                error!("Device sent NACK ('F')");
-                return Err(io::Error::other("Device NACK"));
-            }
-            other => {
-                error!("Unexpected ACK byte: 0x{:02x} ({:?})", other, other as char);
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Unexpected ACK byte 0x{:02x}", other),
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn drain_until_silent(port: &mut Box<dyn SerialPort>, silence: Duration) {
