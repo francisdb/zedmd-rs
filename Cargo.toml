@@ -1,6 +1,6 @@
 [package]
 name = "zedmd"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "A Rust library for interfacing with the ZedMD display controller."
