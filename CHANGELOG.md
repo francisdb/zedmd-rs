@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/francisdb/zedmd-rs/compare/v0.1.2...v0.1.3) - 2026-04-27
+
+### Other
+
+- Potential fix for code scanning alert no. 2: Workflow does not contain permissions ([#12](https://github.com/francisdb/zedmd-rs/pull/12))
+
 ## [0.1.2](https://github.com/francisdb/zedmd-rs/compare/v0.1.1...v0.1.2) - 2026-04-27
 
 ### Other
