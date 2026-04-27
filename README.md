@@ -1,6 +1,6 @@
-# zedmd
+# zedmd-rs
 
-A Rust library for controlling ZeDMD dot matrix displays over USB.
+A Rust library for controlling ZeDMD dot matrix displays over USB or WiFi (UDP / TCP).
 
 Original C++ library:
 https://github.com/PPUC/libzedmd
@@ -18,15 +18,15 @@ cargo add zedmd
 
 ## Examples
 
-| Example                                      | Description                                                                                                                              |
-|----------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|
-| [`pixel_scan`](examples/pixel_scan.rs)       | Scans a single white pixel across every position — useful for verifying the connection and panel                                        |
-| [`display_test`](examples/display_test.rs)   | Cycles through solid colours, gradients, colour bars, checkerboard and static rainbow                                                   |
-| [`plasma`](examples/plasma.rs)               | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                                                    |
-| [`plasma_rgb888`](examples/plasma_rgb888.rs) | Same plasma using true RGB888 (command 0x04) — use this to verify the RGB888 path works on your device                                 |
-| [`rings`](examples/rings.rs)                 | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)                                     |
-| [`rainbow`](examples/rainbow.rs)             | Animated rainbow                                                                                                                         |
-| [`scaling`](examples/scaling.rs)             | RGB888 plasma at native, 2x downscaled, and 2x upscaled source resolutions — evaluates scaling quality                                  |
+| Example                                      | Description                                                                                                                           |
+|----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| [`pixel_scan`](examples/pixel_scan.rs)       | Scans a single white pixel across every position — useful for verifying the connection and panel                                      |
+| [`display_test`](examples/display_test.rs)   | Cycles through solid colours, gradients, colour bars, checkerboard and static rainbow                                                 |
+| [`plasma`](examples/plasma.rs)               | Classic sine-wave colour plasma animation (~9–10 fps USB throughput)                                                                  |
+| [`plasma_rgb888`](examples/plasma_rgb888.rs) | Same plasma using true RGB888 (command 0x04) — use this to verify the RGB888 path works on your device                                |
+| [`rings`](examples/rings.rs)                 | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)                                    |
+| [`rainbow`](examples/rainbow.rs)             | Animated rainbow                                                                                                                      |
+| [`scaling`](examples/scaling.rs)             | RGB888 plasma at native, 2x downscaled, and 2x upscaled source resolutions — evaluates scaling quality                                |
 | [`settings`](examples/settings.rs)           | Unified settings tool: panel/display settings, WiFi credentials, WiFi UDP delay, and transport mode (USB / WiFi UDP / WiFi TCP / SPI) |
 
 Run any example with:
@@ -84,10 +84,8 @@ Reboot the device after saving for new settings to take effect.
 When no WiFi is configured (or the configured network is unavailable), the
 device broadcasts its own setup network:
 
-| | |
-|---|---|
-| **SSID** | `ZeDMD-WiFi` |
-| **Password** | `zedmd1234` |
+- **SSID**: `ZeDMD-WiFi`
+- **Password**: `zedmd1234`
 
 Connect to that network and open <http://zedmd-wifi.local> in a browser to
 configure target WiFi credentials through the web interface.
