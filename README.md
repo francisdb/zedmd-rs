@@ -95,9 +95,10 @@ configure target WiFi credentials through the web interface.
 ### Running examples over WiFi
 
 Once the device is connected to your network and configured for `WifiUdp`
-or `WifiTcp` transport, the `display_test` and `plasma` examples accept a
-`--wifi` flag. With no argument they connect to the default mDNS hostname
-`ZeDMD-WiFi.local`; pass an IP or hostname to override.
+or `WifiTcp` transport, every streaming example (`pixel_scan`, `display_test`,
+`plasma`, `plasma_rgb888`, `plasma_rgb888_true`, `rings`, `rainbow`, `scaling`)
+accepts a `--wifi` flag. With no argument they connect to the default mDNS
+hostname `ZeDMD-WiFi.local`; pass an IP or hostname to override.
 
 ```bash
 cargo run --example display_test -- --wifi              # ZeDMD-WiFi.local
@@ -107,6 +108,9 @@ cargo run --example plasma -- --wifi
 
 The client fetches `http://<host>/handshake` to discover the device's
 streaming port and protocol (UDP or TCP) and connects accordingly.
+
+The `settings` example only supports USB — it configures the device, which
+generally requires a wired connection.
 
 ## Allowing access to the USB device on Linux
 
