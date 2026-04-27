@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn parses_real_device_response() {
-        let body = "128|32|5.1.8|0|UDP|3333|5|256|7|3|0|0|8|2|30|0|somakot-iot|0|63531";
+        let body = "128|32|5.1.8|0|UDP|3333|5|256|7|3|0|0|8|2|30|0|test-ssid|0|63531";
         let h = parse(body).unwrap();
         assert_eq!(h.width, 128);
         assert_eq!(h.height, 32);
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(h.panel_latch_blanking, 2);
         assert_eq!(h.panel_min_refresh_rate, 30);
         assert_eq!(h.y_offset, 0);
-        assert_eq!(h.ssid, "somakot-iot");
+        assert_eq!(h.ssid, "test-ssid");
         assert!(!h.half);
         assert_eq!(h.id, 63531);
     }
