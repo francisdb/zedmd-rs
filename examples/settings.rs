@@ -10,8 +10,8 @@
 use log::{error, info, warn};
 use std::io;
 use std::process::ExitCode;
-use zedmd_rs::types::{RgbOrder, TransportMode};
-use zedmd_rs::zedmd::connect;
+use zedmd::connect;
+use zedmd::types::{RgbOrder, TransportMode};
 
 fn main() -> ExitCode {
     env_logger::Builder::new()
@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn print_settings(comm: &zedmd_rs::zedmd::ZeDMDComm) {
+fn print_settings(comm: &zedmd::ZeDMDComm) {
     info!("  usb_package_size    : {}", comm.write_at_once());
     info!("  min_refresh_rate    : {}", comm.panel_min_refresh_rate());
     info!("  brightness          : {}", comm.brightness());

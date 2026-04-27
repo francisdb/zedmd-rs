@@ -1,4 +1,4 @@
-# zedmd-rs
+# zedmd
 
 A Rust library for controlling ZeDMD dot matrix displays over USB.
 
@@ -61,11 +61,11 @@ cargo run --example settings -- --transport wifi-udp --save
 Or from code:
 
 ```rust
-let comm = zedmd_rs::zedmd::connect()?;
+let comm = zedmd::connect()?;
 comm.set_wifi_ssid("MyNetwork")?;
 comm.set_wifi_password("MyPassword")?;
 comm.set_wifi_port(5000)?;
-comm.set_transport_mode(zedmd_rs::types::TransportMode::WifiUdp)?;
+comm.set_transport_mode(zedmd::types::TransportMode::WifiUdp)?;
 comm.save_settings()?;
 ```
 
