@@ -8,7 +8,9 @@
 //!
 //! Run with:
 //! ```sh
-//! cargo run --example rainbow
+//! cargo run --example rainbow                    # USB
+//! cargo run --example rainbow -- --wifi          # ZeDMD-WiFi.local
+//! cargo run --example rainbow -- --wifi 10.0.1.7 # explicit host
 //! ```
 use log::{error, info};
 use std::io;
@@ -16,7 +18,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use zedmd_rs::color::hsv_to_rgb565;
-use zedmd_rs::zedmd::connect;
+use zedmd_rs::zedmd::{ZeDMDComm, connect, connect_wifi};
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -39,8 +41,24 @@ fn render_rainbow(pixels: &mut [u16], width: usize, height: usize, t: f32) {
     }
 }
 
+fn parse_wifi_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--wifi" {
+            return Some(args.next().unwrap_or_else(|| "ZeDMD-WiFi.local".into()));
+        }
+    }
+    None
+}
+
 fn run() -> io::Result<()> {
-    let mut comm = connect()?;
+    let mut comm: ZeDMDComm = match parse_wifi_arg() {
+        Some(host) => {
+            info!("Connecting over WiFi to {}", host);
+            connect_wifi(&host)?
+        }
+        None => connect()?,
+    };
     comm.run()?;
 
     let width = comm.width() as usize;

@@ -14,7 +14,9 @@
 //!
 //! Run with:
 //! ```sh
-//! cargo run --example pixel_scan
+//! cargo run --example pixel_scan                    # USB
+//! cargo run --example pixel_scan -- --wifi          # ZeDMD-WiFi.local
+//! cargo run --example pixel_scan -- --wifi 10.0.1.7 # explicit host
 //! ```
 use log::{error, info};
 use std::io;
@@ -22,7 +24,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use zedmd_rs::color::rgb565;
-use zedmd_rs::zedmd::connect;
+use zedmd_rs::zedmd::{ZeDMDComm, connect, connect_wifi};
 
 fn main() -> ExitCode {
     // Initialize the logger with color support and debug level
@@ -43,8 +45,24 @@ fn main() -> ExitCode {
     }
 }
 
+fn parse_wifi_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--wifi" {
+            return Some(args.next().unwrap_or_else(|| "ZeDMD-WiFi.local".into()));
+        }
+    }
+    None
+}
+
 fn test_connect() -> io::Result<()> {
-    let mut comm = connect()?;
+    let mut comm: ZeDMDComm = match parse_wifi_arg() {
+        Some(host) => {
+            info!("Connecting over WiFi to {}", host);
+            connect_wifi(&host)?
+        }
+        None => connect()?,
+    };
     comm.run()?;
     comm.disable_debug()?;
     info!("Connected to ZeDMD device");
