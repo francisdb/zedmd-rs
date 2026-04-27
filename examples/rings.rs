@@ -25,8 +25,8 @@ use std::io;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use zedmd_rs::color::hsv_to_rgb565;
-use zedmd_rs::zedmd::{ZeDMDComm, connect, connect_wifi};
+use zedmd::color::hsv_to_rgb565;
+use zedmd::{ZeDMDComm, connect, connect_wifi};
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();

@@ -23,8 +23,8 @@ use std::io;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use zedmd_rs::color::rgb565;
-use zedmd_rs::zedmd::{ZeDMDComm, connect, connect_wifi};
+use zedmd::color::rgb565;
+use zedmd::{ZeDMDComm, connect, connect_wifi};
 
 fn main() -> ExitCode {
     // Initialize the logger with color support and debug level

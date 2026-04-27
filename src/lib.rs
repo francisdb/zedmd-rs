@@ -5,4 +5,6 @@ pub(crate) mod scale;
 pub(crate) mod transport;
 pub mod types;
 pub(crate) mod wifi_handshake;
-pub mod zedmd;
+mod zedmd;
+
+pub use zedmd::*;
