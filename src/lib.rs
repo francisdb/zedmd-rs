@@ -1,5 +1,6 @@
 pub mod color;
 pub mod comm;
+pub mod discovery;
 pub(crate) mod queue;
 pub(crate) mod scale;
 pub(crate) mod transport;

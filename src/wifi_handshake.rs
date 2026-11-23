@@ -41,7 +41,17 @@ pub(crate) struct WifiHandshake {
 }
 
 pub(crate) fn fetch_handshake(host: &str) -> io::Result<WifiHandshake> {
-    let addrs: Vec<_> = (host, 80).to_socket_addrs()?.collect();
+    fetch_handshake_with_timeout(host, 80, HTTP_TIMEOUT).map(|(h, _)| h)
+}
+
+/// Fetch the handshake from `host:http_port` with `timeout` for the connection and each read or
+/// write. Also returns the address the host resolved to.
+pub(crate) fn fetch_handshake_with_timeout(
+    host: &str,
+    http_port: u16,
+    timeout: Duration,
+) -> io::Result<(WifiHandshake, std::net::IpAddr)> {
+    let addrs: Vec<_> = (host, http_port).to_socket_addrs()?.collect();
     let addr = addrs.into_iter().next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -53,9 +63,9 @@ pub(crate) fn fetch_handshake(host: &str) -> io::Result<WifiHandshake> {
         host, addr
     );
 
-    let mut stream = TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)?;
-    stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
-    stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
 
     let request = format!(
         "GET /handshake HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: zedmd-rs\r\n\r\n",
@@ -64,12 +74,14 @@ pub(crate) fn fetch_handshake(host: &str) -> io::Result<WifiHandshake> {
     stream.write_all(request.as_bytes())?;
     stream.flush()?;
 
+    // The handshake is a few hundred bytes. Bound the read so that probing
+    // some other web server (discovery) can't pull in a large page.
     let mut response = Vec::with_capacity(512);
-    stream.read_to_end(&mut response)?;
+    (&mut stream).take(16 * 1024).read_to_end(&mut response)?;
 
     let body = extract_body(&response)?;
     debug!("Handshake body: {}", body);
-    parse(body)
+    parse(body).map(|h| (h, addr.ip()))
 }
 
 fn extract_body(response: &[u8]) -> io::Result<&str> {
