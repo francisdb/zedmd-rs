@@ -69,17 +69,20 @@ impl FrameQueue {
         self.push(FramePixels::Rgb888(pixels))
     }
 
-    /// Block until a frame is available, then return it.
-    /// Returns `None` when stopped and queue is empty.
-    pub fn pop(&self) -> Option<Frame> {
+    /// Wait up to `timeout` for a frame. Returns `Ok(None)` on timeout and
+    /// `Err(())` when stopped and the queue is empty.
+    #[allow(clippy::result_unit_err)]
+    pub fn pop_timeout(&self, timeout: std::time::Duration) -> Result<Option<Frame>, ()> {
         let (lock, cvar) = &*self.inner;
-        let mut state = cvar
-            .wait_while(lock.lock().unwrap(), |s| s.queue.is_empty() && !s.stopped)
+        let (mut state, _) = cvar
+            .wait_timeout_while(lock.lock().unwrap(), timeout, |s| {
+                s.queue.is_empty() && !s.stopped
+            })
             .unwrap();
         if state.stopped && state.queue.is_empty() {
-            return None;
+            return Err(());
         }
-        state.queue.pop_front()
+        Ok(state.queue.pop_front())
     }
 
     /// Called by the background thread after a frame has been successfully sent.
@@ -118,5 +121,21 @@ impl FrameQueue {
         let mut state = lock.lock().unwrap();
         state.stopped = true;
         cvar.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn pop_timeout_returns_frames_timeouts_and_stop() {
+        let q = FrameQueue::new();
+        assert!(matches!(q.pop_timeout(Duration::from_millis(10)), Ok(None)));
+        let id = q.push_rgb565(vec![0; 4]);
+        assert!(matches!(q.pop_timeout(Duration::from_millis(10)), Ok(Some(f)) if f.id == id));
+        q.stop();
+        assert!(q.pop_timeout(Duration::from_millis(10)).is_err());
     }
 }
