@@ -42,8 +42,17 @@ path = "examples/rainbow.rs"
 name = "scaling"
 path = "examples/scaling.rs"
 
+[features]
+default = ["libudev"]
+# On Linux, use libudev to enumerate serial ports. Without it serialport reads
+# the USB ids from sysfs, which is enough to find a ZeDMD and leaves the binary
+# without a libudev runtime dependency.
+libudev = ["serialport/libudev"]
+
 [dependencies]
-env_logger = "0.11.10"
 log = "0.4.29"
 miniz_oxide = "0.9.1"
-serialport = "4.9.0"
+serialport = { version = "4.9.0", default-features = false }
+
+[dev-dependencies]
+env_logger = "0.11.10"
