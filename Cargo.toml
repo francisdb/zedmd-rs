@@ -15,6 +15,10 @@ name = "pixel_scan"
 path = "examples/pixel_scan.rs"
 
 [[example]]
+name = "discover"
+path = "examples/discover.rs"
+
+[[example]]
 name = "settings"
 path = "examples/settings.rs"
 

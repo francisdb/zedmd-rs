@@ -27,6 +27,7 @@ cargo add zedmd
 | [`rings`](examples/rings.rs)                 | Animated concentric colour rings — heavier on the connection than plasma (~6–7 fps USB throughput)                                    |
 | [`rainbow`](examples/rainbow.rs)             | Animated rainbow                                                                                                                      |
 | [`scaling`](examples/scaling.rs)             | RGB888 plasma at native, 2x downscaled, and 2x upscaled source resolutions — evaluates scaling quality                                |
+| [`discover`](examples/discover.rs)           | Lists USB ports with a ZeDMD bridge id and finds a WiFi ZeDMD on the local network                                                    |
 | [`settings`](examples/settings.rs)           | Unified settings tool: panel/display settings, WiFi credentials, WiFi UDP delay, and transport mode (USB / WiFi UDP / WiFi TCP / SPI) |
 
 Run any example with:
@@ -89,6 +90,23 @@ device broadcasts its own setup network:
 
 Connect to that network and open <http://zedmd-wifi.local> in a browser to
 configure target WiFi credentials through the web interface.
+
+### Finding the device
+
+`zedmd::discovery` finds devices without opening them, for setup screens or
+to write the address into another program's settings:
+
+```rust
+use std::time::Duration;
+
+// USB serial ports with a ZeDMD bridge id (nothing is written to them)
+let ports = zedmd::discovery::usb_ports();
+
+// zedmd-wifi.local first, then every address of the local /24
+if let Some(d) = zedmd::discovery::discover_wifi(Duration::from_millis(300)) {
+    println!("{} {}x{} firmware {}", d.ip, d.width, d.height, d.firmware_version);
+}
+```
 
 ### Running examples over WiFi
 
