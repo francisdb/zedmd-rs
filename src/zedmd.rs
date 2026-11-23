@@ -17,6 +17,10 @@ use std::thread;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+/// How long the streaming thread waits for a frame before it checks whether
+/// a keep-alive is due. Below the shortest interval (WiFi TCP, 100 ms).
+const IDLE_WAKE_UP: Duration = Duration::from_millis(50);
+
 /// Handle to the ZeDMD device.
 ///
 /// Frames submitted via [`render_rgb565_frame`] or [`render_rgb888_frame`] are
@@ -139,7 +143,20 @@ fn spawn_with(internal: SharedZeDMDComm) -> ZeDMDComm {
     let handle = thread::Builder::new()
         .name("zedmd-stream".into())
         .spawn(move || {
-            while let Some(frame) = queue_thread.pop() {
+            loop {
+                // Wake up regularly even without frames: run() promises
+                // keep-alives, and a WiFi ZeDMD drops a client that goes
+                // quiet for 3 s (e.g. a still picture).
+                let frame = match queue_thread.pop_timeout(IDLE_WAKE_UP) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => {
+                        if let Err(e) = comm_thread.lock().unwrap().keep_alive_tick() {
+                            error!("Stream thread keep-alive error: {}", e);
+                        }
+                        continue;
+                    }
+                    Err(()) => break,
+                };
                 let mut c = comm_thread.lock().unwrap();
                 let result = match &frame.pixels {
                     FramePixels::Rgb565(pixels) => c.render_rgb565_frame(pixels),
