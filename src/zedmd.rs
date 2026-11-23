@@ -314,11 +314,11 @@ impl ZeDMDComm {
         } else {
             // Convert RGB888 → RGB565 (matching libzedmd default)
             let rgb565: Vec<u16> = scaled
-                .chunks_exact(3)
-                .map(|c| {
-                    let r = c[0] as u16;
-                    let g = c[1] as u16;
-                    let b = c[2] as u16;
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|&[r, g, b]| {
+                    let (r, g, b) = (r as u16, g as u16, b as u16);
                     ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
                 })
                 .collect();
