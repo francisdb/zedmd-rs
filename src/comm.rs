@@ -28,6 +28,15 @@ pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB565: usize = 128 * 4 * 2 + 16;
 /// We cap at 1152 to match the firmware buffer so sub-frames stay within bounds.
 pub(crate) const ZEDMD_ZONES_BYTE_LIMIT_RGB888: usize = 1152;
 
+/// USB vendor/product ids of the serial bridges used on ZeDMD boards, the
+/// same list libzedmd accepts during auto-detection.
+pub(crate) const ZEDMD_USB_IDS: [(u16, u16); 4] = [
+    (0x303a, 0x1001), // ESP32-S3 native USB (JTAG/serial)
+    (0x1a86, 0x55d3), // QinHeng CH343, UART of an ESP32-S3
+    (0x1a86, 0x7523), // QinHeng CH340, ESP32 boards
+    (0x10c4, 0xea60), // Silicon Labs CP210x, ESP32 boards
+];
+
 // "FRAME" in ascii
 pub(crate) const FRAME_HEADER: [u8; 5] = [0x46, 0x52, 0x41, 0x4d, 0x45];
 // "ZeDMD" in ascii (first 5 of the 6-byte CtrlChars)
@@ -392,6 +401,15 @@ fn try_connect_once() -> Option<SharedZeDMDComm> {
     for p in ports {
         if let UsbPort(info) = p.port_type {
             let port_name = p.port_name.clone();
+            if !ZEDMD_USB_IDS.contains(&(info.vid, info.pid)) {
+                // Don't write a handshake to devices that can't be a ZeDMD
+                // (Arduinos, output controllers...): libzedmd skips them too.
+                debug!(
+                    "Skipping {}: vid={:04x}, pid={:04x} is not a ZeDMD bridge",
+                    port_name, info.vid, info.pid
+                );
+                continue;
+            }
             debug!(
                 "ZeDMD candidate: device={}, vid={:04x}, pid={:04x}",
                 port_name, info.vid, info.pid
